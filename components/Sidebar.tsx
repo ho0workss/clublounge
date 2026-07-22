@@ -4,7 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { MENUS } from "@/lib/menu";
 import { useAuth } from "@/lib/auth";
-import { canManageAffiliations, canManageMembers } from "@/lib/roles";
+import { canManageAffiliations } from "@/lib/roles";
 
 interface NavItem {
   href: string;
@@ -18,11 +18,8 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
   const role = user?.role ?? "member";
 
   const admin: NavItem[] = [];
-  if (canManageMembers(role))
-    admin.push({ href: "/dashboard/members", label: "구성원 관리", icon: "👥" });
   if (canManageAffiliations(role))
     admin.push({ href: "/dashboard/affiliations", label: "소속 관리", icon: "🏢" });
-  admin.push({ href: "/dashboard/settings", label: "설정", icon: "⚙️" });
 
   function Item({ href, label, icon }: NavItem) {
     const active = pathname === href;
@@ -51,12 +48,16 @@ export default function Sidebar({ onNavigate }: { onNavigate?: () => void }) {
         <Item key={m.slug} href={`/dashboard/${m.slug}`} label={m.label} icon={m.icon} />
       ))}
 
-      <p className="px-3 pb-2 pt-4 text-xs font-semibold uppercase tracking-wider text-slate-400">
-        관리
-      </p>
-      {admin.map((a) => (
-        <Item key={a.href} {...a} />
-      ))}
+      {admin.length > 0 && (
+        <>
+          <p className="px-3 pb-2 pt-4 text-xs font-semibold uppercase tracking-wider text-slate-400">
+            관리
+          </p>
+          {admin.map((a) => (
+            <Item key={a.href} {...a} />
+          ))}
+        </>
+      )}
     </nav>
   );
 }
