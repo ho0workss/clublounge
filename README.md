@@ -1,0 +1,51 @@
+# ClubLounge 🍸
+
+소속별 매장(라운지/바) 운영 관리 시스템. **Next.js + Supabase + Vercel** 로 구축되었습니다.
+
+## 주요 기능
+
+- **로그인 / 회원가입** — 회원가입 시 아이디 · 비밀번호 · 소속을 설정합니다.
+- **마스터 계정** — 모든 소속별 페이지를 열람/관리할 수 있습니다. (우측 상단에서 소속 전환)
+  - 아이디: `ho0`
+- **소속별 페이지** — 일반 회원은 자신의 소속 데이터만 열람/관리합니다.
+- **커스텀 브랜딩** — 좌측 상단 로고(300×300 ~ 1000×1000px)와 이름을 소속별로 커스터마이즈.
+- **반응형 UI** — PC는 좌측 사이드바 메뉴, 모바일은 상단 햄버거 드로어.
+- **메뉴** — 주류 및 비품 · 조판현황 · 출근부 · 업장 현황
+
+## 아키텍처
+
+```
+Next.js (App Router, 클라이언트) ──rpc──▶ Supabase Postgres
+                                          └ SECURITY DEFINER 함수(cl_*)로 커스텀 인증
+```
+
+- 인증/권한/스코프는 모두 Postgres 의 `SECURITY DEFINER` RPC(`cl_login`, `cl_signup`,
+  `cl_records_*`, `cl_branding_*` 등) 안에서 처리됩니다.
+- 모든 `cl_*` 테이블은 RLS 활성화 + 정책 없음 → **공개(anon) 키로 테이블 직접 접근 불가**.
+  오직 검증된 RPC 를 통해서만 데이터에 접근합니다.
+- 세션 토큰은 랜덤 문자열이며 `cl_sessions` 에 저장, 30일 만료됩니다.
+- 비밀번호는 `pgcrypto` bcrypt(`crypt`/`gen_salt('bf')`) 로 해시 저장됩니다.
+
+> ClubLounge 관련 객체는 모두 `cl_` 접두사로 격리되어 있으며 기존 데이터베이스 객체에는
+> 영향을 주지 않습니다.
+
+## 로컬 실행
+
+```bash
+npm install
+cp .env.example .env.local   # 필요 시 값 수정
+npm run dev
+```
+
+## 환경 변수
+
+| 이름 | 설명 |
+| --- | --- |
+| `NEXT_PUBLIC_SUPABASE_URL` | Supabase 프로젝트 URL |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase publishable(anon) 키 — 브라우저 노출 안전 |
+
+값이 없으면 `lib/supabase.ts` 의 공개 기본값으로 동작합니다.
+
+## 배포
+
+Vercel 에 배포됩니다. `main`(또는 연결된 브랜치) push 시 자동 빌드됩니다.
