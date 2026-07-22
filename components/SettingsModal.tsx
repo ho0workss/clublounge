@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useAuth } from "@/lib/auth";
 import { useDashboard } from "@/lib/dashboard";
 import { api, ManagedUser, Role } from "@/lib/api";
@@ -28,8 +29,11 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
   if (canManageMembers(role)) tabs.push({ id: "members", label: "구성원 관리" });
 
   const [tab, setTab] = useState<Tab>("password");
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => setMounted(true), []);
+  if (!mounted) return null;
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-50 grid place-items-center bg-black/40 p-4"
       onClick={onClose}
@@ -73,7 +77,8 @@ export default function SettingsModal({ onClose }: { onClose: () => void }) {
           {tab === "members" && <MembersTab />}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
