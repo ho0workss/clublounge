@@ -8,7 +8,7 @@ import {
   useState,
   ReactNode,
 } from "react";
-import { api, SessionUser } from "./api";
+import { api, SessionUser, SignupResult } from "./api";
 
 const TOKEN_KEY = "cl_token";
 const AFF_KEY = "cl_selected_aff";
@@ -20,8 +20,14 @@ interface AuthState {
   activeAffiliation: string | null;
   setActiveAffiliation: (aff: string) => void;
   login: (username: string, password: string) => Promise<void>;
-  signup: (username: string, password: string, affiliation: string) => Promise<void>;
+  signup: (
+    username: string,
+    password: string,
+    affiliation: string
+  ) => Promise<SignupResult>;
   logout: () => Promise<void>;
+  /** Reflect an affiliation rename into the local session immediately. */
+  applyAffiliationRename: (oldName: string, newName: string) => void;
 }
 
 const AuthContext = createContext<AuthState | null>(null);
@@ -31,7 +37,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
   const [activeAff, setActiveAff] = useState<string | null>(null);
 
-  // Restore session on first load.
+  // Restore session on first load — persistent login (sessions live ~10y server-side).
   useEffect(() => {
     const token =
       typeof window !== "undefined" ? localStorage.getItem(TOKEN_KEY) : null;
@@ -79,7 +85,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         persist(await api.login(username, password));
       },
       signup: async (username, password, affiliation) => {
-        persist(await api.signup(username, password, affiliation));
+        const res = await api.signup(username, password, affiliation);
+        if (!res.pending) persist(res);
+        return res;
       },
       logout: async () => {
         if (user) {
@@ -93,6 +101,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         localStorage.removeItem(AFF_KEY);
         setUser(null);
         setActiveAff(null);
+      },
+      applyAffiliationRename: (oldName, newName) => {
+        setUser((prev) =>
+          prev && prev.affiliation === oldName
+            ? { ...prev, affiliation: newName }
+            : prev
+        );
+        setActiveAff((prev) => (prev === oldName ? newName : prev));
+        if (
+          typeof window !== "undefined" &&
+          localStorage.getItem(AFF_KEY) === oldName
+        ) {
+          localStorage.setItem(AFF_KEY, newName);
+        }
       },
     }),
     [user, loading, activeAff]

@@ -5,13 +5,15 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import { useDashboard } from "@/lib/dashboard";
 import BrandingModal from "./BrandingModal";
+import { ROLE_LABEL, canEditBranding } from "@/lib/roles";
 
 export default function Header({ onMenuClick }: { onMenuClick: () => void }) {
   const { user, logout, activeAffiliation, setActiveAffiliation } = useAuth();
   const { branding, affiliations } = useDashboard();
   const router = useRouter();
   const [showBranding, setShowBranding] = useState(false);
-  const isMaster = user?.role === "master";
+  const role = user?.role ?? "member";
+  const isMaster = role === "master";
 
   async function handleLogout() {
     await logout();
@@ -76,8 +78,8 @@ export default function Header({ onMenuClick }: { onMenuClick: () => void }) {
           </select>
         )}
 
-        {/* branding settings (only when an affiliation is active) */}
-        {activeAffiliation && (
+        {/* branding settings (master / 정관리자 only, when an affiliation is active) */}
+        {activeAffiliation && canEditBranding(role) && (
           <button
             onClick={() => setShowBranding(true)}
             className="hidden h-10 w-10 place-items-center rounded-lg text-slate-500 hover:bg-slate-100 sm:grid"
@@ -94,11 +96,19 @@ export default function Header({ onMenuClick }: { onMenuClick: () => void }) {
           <span className="text-sm font-medium text-slate-600">
             {user?.username}
           </span>
-          {isMaster && (
-            <span className="rounded bg-brand-600 px-1.5 py-0.5 text-[10px] font-bold text-white">
-              MASTER
-            </span>
-          )}
+          <span
+            className={`rounded px-1.5 py-0.5 text-[10px] font-bold text-white ${
+              isMaster
+                ? "bg-brand-600"
+                : role === "chief_admin"
+                ? "bg-emerald-600"
+                : role === "operator"
+                ? "bg-sky-600"
+                : "bg-slate-400"
+            }`}
+          >
+            {ROLE_LABEL[role]}
+          </span>
         </div>
 
         <button
