@@ -7,6 +7,7 @@ import { useDashboard } from "@/lib/dashboard";
 import { api, ManagedUser, Role } from "@/lib/api";
 import {
   ROLE_LABEL,
+  ROLE_BADGE,
   assignableRoles,
   canDeleteUser,
   canEditBranding,
@@ -290,13 +291,6 @@ function AffiliationTab() {
   );
 }
 
-const roleBadge: Record<Role, string> = {
-  master: "bg-brand-600",
-  chief_admin: "bg-emerald-600",
-  operator: "bg-sky-600",
-  member: "bg-slate-400",
-};
-
 function MembersTab() {
   const { user, activeAffiliation } = useAuth();
   const role = user?.role ?? "member";
@@ -379,7 +373,7 @@ function MembersTab() {
                   ))}
                 </select>
               ) : (
-                <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold text-white ${roleBadge[u.role]}`}>
+                <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold text-white ${ROLE_BADGE[u.role]}`}>
                   {ROLE_LABEL[u.role]}
                 </span>
               )}

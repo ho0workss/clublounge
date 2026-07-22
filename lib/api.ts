@@ -1,6 +1,6 @@
 import { supabase } from "./supabase";
 
-export type Role = "master" | "chief_admin" | "operator" | "member";
+export type Role = "master" | "chief_admin" | "operator" | "deputy" | "member";
 
 export interface SessionUser {
   token: string;
@@ -13,7 +13,15 @@ export type SignupResult =
   | ({ pending: false } & SessionUser)
   | { pending: true; affiliation: string };
 
-export type RecordKind = "beverage" | "shift" | "attendance" | "venue";
+export type RecordKind =
+  | "beverage"
+  | "shift"
+  | "attendance"
+  | "venue"
+  | "liquor"
+  | "liquor_set"
+  | "supply"
+  | "table";
 
 export interface Rec {
   id: string;

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth";
 import { useDashboard } from "@/lib/dashboard";
 import SettingsModal from "./SettingsModal";
-import { ROLE_LABEL } from "@/lib/roles";
+import { ROLE_LABEL, ROLE_BADGE } from "@/lib/roles";
 
 export default function Header({ onMenuClick }: { onMenuClick: () => void }) {
   const { user, logout, activeAffiliation, setActiveAffiliation } = useAuth();
@@ -95,15 +95,7 @@ export default function Header({ onMenuClick }: { onMenuClick: () => void }) {
             {user?.username}
           </span>
           <span
-            className={`rounded px-1.5 py-0.5 text-[10px] font-bold text-white ${
-              isMaster
-                ? "bg-brand-600"
-                : role === "chief_admin"
-                ? "bg-emerald-600"
-                : role === "operator"
-                ? "bg-sky-600"
-                : "bg-slate-400"
-            }`}
+            className={`rounded px-1.5 py-0.5 text-[10px] font-bold text-white ${ROLE_BADGE[role]}`}
           >
             {ROLE_LABEL[role]}
           </span>
