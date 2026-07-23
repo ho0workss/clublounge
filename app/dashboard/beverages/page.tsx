@@ -86,6 +86,59 @@ const setSubtotal = (set: Rec, pm: Record<string, number>) =>
 const setFinal = (set: Rec, pm: Record<string, number>) =>
   Math.max(0, setSubtotal(set, pm) - (Number(set.data.discount) || 0));
 
+/** 카테고리별로 주류를 그룹핑. 존재하는 카테고리만, 정해진 순서 + 기타 */
+function groupByCategory(liquors: Rec[]) {
+  const groups: Record<string, Rec[]> = {};
+  for (const l of liquors) {
+    const c = (l.data.category as string) || "기타";
+    (groups[c] ??= []).push(l);
+  }
+  const order = [...CATEGORIES, "기타"].filter((c) => groups[c]?.length);
+  return { groups, order };
+}
+
+/* 접이식(토글) 섹션 */
+function Accordion({
+  title,
+  count,
+  badge,
+  defaultOpen = false,
+  children,
+}: {
+  title: string;
+  count?: string;
+  badge?: React.ReactNode;
+  defaultOpen?: boolean;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white">
+      <button
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 px-4 py-3 text-left hover:bg-slate-50"
+      >
+        <span
+          className={`inline-block text-slate-400 transition-transform ${open ? "rotate-90" : ""}`}
+        >
+          ▸
+        </span>
+        {badge}
+        <span className="font-bold text-slate-800">{title}</span>
+        {count && <span className="text-xs font-normal text-slate-400">{count}</span>}
+      </button>
+      {open && <div className="border-t border-slate-100">{children}</div>}
+    </div>
+  );
+}
+function SetBadge() {
+  return (
+    <span className="rounded-md bg-violet-100 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 ring-1 ring-inset ring-violet-200">
+      세트
+    </span>
+  );
+}
+
 export default function BeveragesPage() {
   const { user, activeAffiliation } = useAuth();
   const role = user?.role ?? "member";
@@ -182,19 +235,25 @@ export default function BeveragesPage() {
   );
 }
 
-/* ---------- 주류대 (read-only, 한 줄 = 사진/이름/가격/종류) ---------- */
+/* ---------- 주류대 (read-only, 종류별 토글 아코디언) ---------- */
 function LiquorBoard({ liquors, sets }: { liquors: Rec[]; sets: Rec[] }) {
   const pm = priceMapOf(liquors);
   if (liquors.length === 0 && sets.length === 0)
     return <Empty text="주류구성에서 주류와 세트를 먼저 등록하세요." />;
 
+  const { groups, order } = groupByCategory(liquors);
+
   return (
-    <div className="space-y-6">
-      {liquors.length > 0 && (
-        <section>
-          <h3 className="mb-2 text-sm font-bold text-slate-700">주류 단품</h3>
-          <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white">
-            {liquors.map((l) => (
+    <div className="space-y-3">
+      {order.map((cat) => (
+        <Accordion
+          key={cat}
+          title={cat}
+          count={`${groups[cat].length}종`}
+          badge={cat === "기타" ? null : <CatPill c={cat} />}
+        >
+          <div className="divide-y divide-slate-100">
+            {groups[cat].map((l) => (
               <div key={l.id} className="flex items-center gap-2 p-2.5 sm:gap-3 sm:p-3">
                 <Thumb src={l.data.image} />
                 <span className="min-w-0 flex-1 truncate text-sm font-bold text-slate-800 sm:text-base">
@@ -203,17 +262,15 @@ function LiquorBoard({ liquors, sets }: { liquors: Rec[]; sets: Rec[] }) {
                 <span className="shrink-0 text-sm font-extrabold text-brand-600 sm:text-lg">
                   {won(l.data.price)}
                 </span>
-                <CatPill c={l.data.category} />
               </div>
             ))}
           </div>
-        </section>
-      )}
+        </Accordion>
+      ))}
 
       {sets.length > 0 && (
-        <section>
-          <h3 className="mb-2 text-sm font-bold text-slate-700">세트</h3>
-          <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border-2 border-brand-200 bg-white">
+        <Accordion title="세트" count={`${sets.length}개`} badge={<SetBadge />}>
+          <div className="divide-y divide-slate-100">
             {sets.map((s) => {
               const sub = setSubtotal(s, pm);
               const fin = setFinal(s, pm);
@@ -241,18 +298,12 @@ function LiquorBoard({ liquors, sets }: { liquors: Rec[]; sets: Rec[] }) {
                       </div>
                     )}
                   </div>
-                  {s.data.category ? (
-                    <CatPill c={s.data.category} />
-                  ) : (
-                    <span className="shrink-0 rounded-md bg-violet-100 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 ring-1 ring-inset ring-violet-200">
-                      세트
-                    </span>
-                  )}
+                  {s.data.category && <CatPill c={s.data.category} />}
                 </div>
               );
             })}
           </div>
-        </section>
+        </Accordion>
       )}
     </div>
   );
@@ -448,6 +499,8 @@ function LiquorConfig({
     onChange();
   }
 
+  const { groups: cfgGroups, order: cfgOrder } = groupByCategory(liquors);
+
   return (
     <div className="space-y-8">
       {/* liquors */}
@@ -508,13 +561,24 @@ function LiquorConfig({
           </button>
         </div>
 
-        {/* list */}
-        <div className="divide-y divide-slate-100 rounded-2xl border border-slate-200 bg-white">
-          {liquors.length === 0 && (
-            <p className="p-4 text-sm text-slate-400">등록된 주류가 없습니다.</p>
-          )}
-          {liquors.map((l) => (
-            <div key={l.id} className="flex flex-wrap items-center gap-2.5 p-3">
+        {/* list (종류별 토글) */}
+        {liquors.length === 0 ? (
+          <p className="rounded-2xl border border-slate-200 bg-white p-4 text-sm text-slate-400">
+            등록된 주류가 없습니다.
+          </p>
+        ) : (
+          <div className="space-y-3">
+            {cfgOrder.map((cat) => (
+              <Accordion
+                key={cat}
+                title={cat}
+                count={`${cfgGroups[cat].length}종`}
+                badge={cat === "기타" ? null : <CatPill c={cat} />}
+                defaultOpen
+              >
+                <div className="divide-y divide-slate-100">
+                  {cfgGroups[cat].map((l) => (
+                    <div key={l.id} className="flex flex-wrap items-center gap-2.5 p-3">
               <label className="cursor-pointer">
                 <Thumb src={l.data.image} />
                 <input
@@ -562,9 +626,13 @@ function LiquorConfig({
               >
                 삭제
               </button>
-            </div>
-          ))}
-        </div>
+                    </div>
+                  ))}
+                </div>
+              </Accordion>
+            ))}
+          </div>
+        )}
       </section>
 
       {/* sets */}
@@ -584,17 +652,21 @@ function LiquorConfig({
             세트 추가
           </button>
         </div>
-        <div className="space-y-3">
-          {sets.map((s) => (
-            <SetEditor
-              key={s.id}
-              set={s}
-              liquors={liquors}
-              onSave={saveSet}
-              onDelete={delSet}
-            />
-          ))}
-        </div>
+        {sets.length > 0 && (
+          <Accordion title="세트" count={`${sets.length}개`} badge={<SetBadge />} defaultOpen>
+            <div className="space-y-3 p-3">
+              {sets.map((s) => (
+                <SetEditor
+                  key={s.id}
+                  set={s}
+                  liquors={liquors}
+                  onSave={saveSet}
+                  onDelete={delSet}
+                />
+              ))}
+            </div>
+          </Accordion>
+        )}
       </section>
     </div>
   );

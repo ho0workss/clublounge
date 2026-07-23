@@ -33,6 +33,79 @@ function infoLine(data: Record<string, any>) {
   return `${label}(${toManwon(tableTotal(data))})`;
 }
 
+/* ---------- 주류 종류(카테고리) / 세트 가격 / 아코디언 ---------- */
+const CATEGORIES = ["리큐르", "위스키", "데킬라", "보드카", "샴페인"] as const;
+const CAT_STYLE: Record<string, string> = {
+  리큐르: "bg-pink-100 text-pink-700 ring-pink-200",
+  위스키: "bg-amber-100 text-amber-800 ring-amber-200",
+  데킬라: "bg-lime-100 text-lime-700 ring-lime-200",
+  보드카: "bg-sky-100 text-sky-700 ring-sky-200",
+  샴페인: "bg-yellow-100 text-yellow-800 ring-yellow-200",
+};
+function CatPill({ c }: { c?: string }) {
+  if (!c) return null;
+  return (
+    <span
+      className={`shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium ring-1 ring-inset ${
+        CAT_STYLE[c] ?? "bg-slate-100 text-slate-600 ring-slate-200"
+      }`}
+    >
+      {c}
+    </span>
+  );
+}
+function priceMapOf(liquors: Rec[]) {
+  const m: Record<string, number> = {};
+  liquors.forEach((l) => (m[l.data.name] = Number(l.data.price) || 0));
+  return m;
+}
+function setFinalPrice(set: Rec, pm: Record<string, number>) {
+  const sub = (set.data.items ?? []).reduce(
+    (s: number, it: any) => s + (pm[it.name] || 0) * (Number(it.qty) || 0),
+    0
+  );
+  return Math.max(0, sub - (Number(set.data.discount) || 0));
+}
+function groupLiquorsByCategory(liquors: Rec[]) {
+  const groups: Record<string, Rec[]> = {};
+  for (const l of liquors) {
+    const c = (l.data.category as string) || "기타";
+    (groups[c] ??= []).push(l);
+  }
+  const order = [...CATEGORIES, "기타"].filter((c) => groups[c]?.length);
+  return { groups, order };
+}
+function PickerAccordion({
+  title,
+  count,
+  badge,
+  children,
+}: {
+  title: string;
+  count?: string;
+  badge?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="overflow-hidden rounded-lg border border-slate-200">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="flex w-full items-center gap-2 bg-slate-50 px-3 py-2 text-left hover:bg-slate-100"
+      >
+        <span className={`inline-block text-slate-400 transition-transform ${open ? "rotate-90" : ""}`}>
+          ▸
+        </span>
+        {badge}
+        <span className="text-sm font-semibold text-slate-700">{title}</span>
+        {count && <span className="text-xs font-normal text-slate-400">{count}</span>}
+      </button>
+      {open && <div className="divide-y divide-slate-50 p-1.5">{children}</div>}
+    </div>
+  );
+}
+
 /* ---------- 날짜 유틸 (클라이언트) ---------- */
 function pad(n: number) {
   return String(n).padStart(2, "0");
@@ -72,6 +145,7 @@ export default function ShiftsPage() {
 
   const [rows, setRows] = useState<Rec[]>([]);
   const [liquorDefs, setLiquorDefs] = useState<Rec[]>([]);
+  const [setDefs, setSetDefs] = useState<Rec[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<View>("visual");
   const [selectedDate, setSelectedDate] = useState<string>(TODAY);
@@ -98,12 +172,14 @@ export default function ShiftsPage() {
     }
     setLoading(true);
     try {
-      const [tbls, liqs] = await Promise.all([
+      const [tbls, liqs, setsList] = await Promise.all([
         api.listRecords(user.token, "table", activeAffiliation),
         api.listRecords(user.token, "liquor", activeAffiliation),
+        api.listRecords(user.token, "liquor_set", activeAffiliation),
       ]);
       setRows(tbls);
       setLiquorDefs(liqs);
+      setSetDefs(setsList);
     } finally {
       setLoading(false);
     }
@@ -489,6 +565,7 @@ export default function ShiftsPage() {
         <TableModal
           row={modalRow}
           liquorDefs={liquorDefs}
+          setDefs={setDefs}
           canManage={canManage}
           onClose={() => setModalId(null)}
           onPatch={(data) => patchRow(modalRow.id, data)}
@@ -606,6 +683,7 @@ function TimetableView({ rows, onOpen }: { rows: Rec[]; onOpen: (id: string) => 
 function TableModal({
   row,
   liquorDefs,
+  setDefs,
   canManage,
   onClose,
   onPatch,
@@ -613,6 +691,7 @@ function TableModal({
 }: {
   row: Rec;
   liquorDefs: Rec[];
+  setDefs: Rec[];
   canManage: boolean;
   onClose: () => void;
   onPatch: (data: Record<string, any>) => void;
@@ -637,6 +716,35 @@ function TableModal({
   }
 
   const shape: Shape = draft.shape === "circle" ? "circle" : "square";
+  const pm = priceMapOf(liquorDefs);
+  const { groups: liqGroups, order: liqOrder } = groupLiquorsByCategory(liquorDefs);
+
+  function PickerRow({ name, price }: { name: string; price: number }) {
+    const q = qtyOf(name);
+    return (
+      <div className="flex items-center justify-between gap-2 rounded-md px-2 py-1.5">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium text-slate-700">{name}</p>
+          <p className="text-xs text-slate-400">{won(price)}</p>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={() => setQty(name, price, Math.max(0, q - 1))}
+            className="grid h-7 w-7 place-items-center rounded-md bg-slate-100 text-slate-600 hover:bg-slate-200"
+          >
+            −
+          </button>
+          <span className="w-7 text-center text-sm font-semibold tabular-nums">{q}</span>
+          <button
+            onClick={() => setQty(name, price, q + 1)}
+            className="grid h-7 w-7 place-items-center rounded-md bg-brand-600 text-white hover:bg-brand-700"
+          >
+            +
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return createPortal(
     <div className="fixed inset-0 z-[100] grid place-items-center bg-black/40 p-4" onClick={onClose}>
@@ -766,43 +874,47 @@ function TableModal({
             </div>
 
             {canManage ? (
-              liquorDefs.length === 0 ? (
+              liquorDefs.length === 0 && setDefs.length === 0 ? (
                 <p className="rounded-lg border border-dashed border-slate-200 p-3 text-center text-xs text-slate-400">
-                  ‘주류 및 비품 → 주류구성’에서 주류를 먼저 등록하세요.
+                  ‘주류 및 비품 → 주류구성’에서 주류·세트를 먼저 등록하세요.
                 </p>
               ) : (
-                <div className="space-y-1.5">
-                  {liquorDefs.map((d) => {
-                    const name = d.data.name as string;
-                    const price = Number(d.data.price) || 0;
-                    const q = qtyOf(name);
-                    return (
-                      <div
-                        key={d.id}
-                        className="flex items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2"
-                      >
-                        <div className="min-w-0">
-                          <p className="truncate text-sm font-medium text-slate-700">{name}</p>
-                          <p className="text-xs text-slate-400">{won(price)}</p>
-                        </div>
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            onClick={() => setQty(name, price, Math.max(0, q - 1))}
-                            className="grid h-7 w-7 place-items-center rounded-md bg-slate-100 text-slate-600 hover:bg-slate-200"
-                          >
-                            −
-                          </button>
-                          <span className="w-7 text-center text-sm font-semibold tabular-nums">{q}</span>
-                          <button
-                            onClick={() => setQty(name, price, q + 1)}
-                            className="grid h-7 w-7 place-items-center rounded-md bg-brand-600 text-white hover:bg-brand-700"
-                          >
-                            +
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })}
+                <div className="space-y-2">
+                  {liqOrder.map((cat) => (
+                    <PickerAccordion
+                      key={cat}
+                      title={cat}
+                      count={`${liqGroups[cat].length}종`}
+                      badge={cat === "기타" ? null : <CatPill c={cat} />}
+                    >
+                      {liqGroups[cat].map((d) => (
+                        <PickerRow
+                          key={d.id}
+                          name={d.data.name as string}
+                          price={Number(d.data.price) || 0}
+                        />
+                      ))}
+                    </PickerAccordion>
+                  ))}
+                  {setDefs.length > 0 && (
+                    <PickerAccordion
+                      title="세트"
+                      count={`${setDefs.length}개`}
+                      badge={
+                        <span className="rounded-md bg-violet-100 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 ring-1 ring-inset ring-violet-200">
+                          세트
+                        </span>
+                      }
+                    >
+                      {setDefs.map((s) => (
+                        <PickerRow
+                          key={s.id}
+                          name={s.data.setName as string}
+                          price={setFinalPrice(s, pm)}
+                        />
+                      ))}
+                    </PickerAccordion>
+                  )}
                 </div>
               )
             ) : list.length === 0 ? (
