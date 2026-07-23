@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { api, Rec } from "@/lib/api";
 import { canEditLiquorConfig, canEditSupplies } from "@/lib/roles";
@@ -11,6 +11,80 @@ const won = (v: any) =>
   v === "" || v === undefined || v === null || isNaN(Number(v))
     ? "-"
     : Number(v).toLocaleString("ko-KR") + "원";
+
+/* 주류 종류 (노션 셀렉트 스타일 색상) */
+const CATEGORIES = ["리큐르", "위스키", "데킬라", "보드카", "샴페인"] as const;
+const CAT_STYLE: Record<string, string> = {
+  리큐르: "bg-pink-100 text-pink-700 ring-pink-200",
+  위스키: "bg-amber-100 text-amber-800 ring-amber-200",
+  데킬라: "bg-lime-100 text-lime-700 ring-lime-200",
+  보드카: "bg-sky-100 text-sky-700 ring-sky-200",
+  샴페인: "bg-yellow-100 text-yellow-800 ring-yellow-200",
+};
+function CatPill({ c }: { c?: string }) {
+  if (!c) return null;
+  return (
+    <span
+      className={`shrink-0 rounded-md px-1.5 py-0.5 text-[11px] font-medium ring-1 ring-inset ${
+        CAT_STYLE[c] ?? "bg-slate-100 text-slate-600 ring-slate-200"
+      }`}
+    >
+      {c}
+    </span>
+  );
+}
+
+function Thumb({ src, fallback = "🍶" }: { src?: string; fallback?: string }) {
+  return src ? (
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={src}
+      alt=""
+      className="h-11 w-11 shrink-0 rounded-lg object-cover ring-1 ring-slate-200"
+    />
+  ) : (
+    <div className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-slate-100 text-lg">
+      {fallback}
+    </div>
+  );
+}
+
+/** 이미지 파일을 축소해 data URL(jpeg)로 변환 (jsonb 저장용) */
+async function fileToThumb(file: File, max = 360): Promise<string> {
+  const dataUrl = await new Promise<string>((res, rej) => {
+    const fr = new FileReader();
+    fr.onload = () => res(fr.result as string);
+    fr.onerror = rej;
+    fr.readAsDataURL(file);
+  });
+  const img = await new Promise<HTMLImageElement>((res, rej) => {
+    const im = new Image();
+    im.onload = () => res(im);
+    im.onerror = rej;
+    im.src = dataUrl;
+  });
+  const scale = Math.min(1, max / Math.max(img.width, img.height));
+  const w = Math.max(1, Math.round(img.width * scale));
+  const h = Math.max(1, Math.round(img.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  canvas.getContext("2d")!.drawImage(img, 0, 0, w, h);
+  return canvas.toDataURL("image/jpeg", 0.82);
+}
+
+function priceMapOf(liquors: Rec[]) {
+  const m: Record<string, number> = {};
+  liquors.forEach((l) => (m[l.data.name] = Number(l.data.price) || 0));
+  return m;
+}
+const setSubtotal = (set: Rec, pm: Record<string, number>) =>
+  (set.data.items ?? []).reduce(
+    (s: number, it: any) => s + (pm[it.name] || 0) * (Number(it.qty) || 0),
+    0
+  );
+const setFinal = (set: Rec, pm: Record<string, number>) =>
+  Math.max(0, setSubtotal(set, pm) - (Number(set.data.discount) || 0));
 
 export default function BeveragesPage() {
   const { user, activeAffiliation } = useAuth();
@@ -91,11 +165,7 @@ export default function BeveragesPage() {
           ) : tab === "board" ? (
             <LiquorBoard liquors={liquors} sets={sets} />
           ) : tab === "supply" ? (
-            <SupplyBoard
-              supplies={supplies}
-              canEdit={canEditSupplies(role)}
-              onChange={load}
-            />
+            <SupplyBoard supplies={supplies} canEdit={canEditSupplies(role)} onChange={load} />
           ) : tab === "config" ? (
             <LiquorConfig
               liquors={liquors}
@@ -112,44 +182,71 @@ export default function BeveragesPage() {
   );
 }
 
-/* ---------- 주류대 (read-only, high visibility) ---------- */
+/* ---------- 주류대 (read-only, 한 줄 = 사진/이름/가격/종류) ---------- */
 function LiquorBoard({ liquors, sets }: { liquors: Rec[]; sets: Rec[] }) {
+  const pm = priceMapOf(liquors);
   if (liquors.length === 0 && sets.length === 0)
     return <Empty text="주류구성에서 주류와 세트를 먼저 등록하세요." />;
+
   return (
     <div className="space-y-6">
-      <section>
-        <h3 className="mb-3 text-sm font-bold text-slate-700">주류 단품</h3>
-        <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
-          {liquors.map((l) => (
-            <div
-              key={l.id}
-              className="rounded-2xl border border-slate-200 bg-white p-4 text-center shadow-sm"
-            >
-              <p className="truncate text-base font-bold text-slate-800">{l.data.name}</p>
-              <p className="mt-1 text-lg font-extrabold text-brand-600">{won(l.data.price)}</p>
-            </div>
-          ))}
-        </div>
-      </section>
+      {liquors.length > 0 && (
+        <section>
+          <h3 className="mb-2 text-sm font-bold text-slate-700">주류 단품</h3>
+          <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+            {liquors.map((l) => (
+              <div key={l.id} className="flex items-center gap-3 p-3">
+                <Thumb src={l.data.image} />
+                <span className="min-w-0 flex-1 truncate text-base font-bold text-slate-800">
+                  {l.data.name}
+                </span>
+                <span className="shrink-0 text-lg font-extrabold text-brand-600">
+                  {won(l.data.price)}
+                </span>
+                <CatPill c={l.data.category} />
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
 
       {sets.length > 0 && (
         <section>
-          <h3 className="mb-3 text-sm font-bold text-slate-700">세트</h3>
-          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            {sets.map((s) => (
-              <div key={s.id} className="rounded-2xl border-2 border-brand-200 bg-brand-50/40 p-4 shadow-sm">
-                <p className="text-lg font-extrabold text-brand-700">{s.data.setName}</p>
-                <ul className="mt-2 space-y-1">
-                  {(s.data.items ?? []).map((it: any, i: number) => (
-                    <li key={i} className="flex justify-between text-sm text-slate-700">
-                      <span>{it.name}</span>
-                      <span className="font-semibold">×{it.qty}</span>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
+          <h3 className="mb-2 text-sm font-bold text-slate-700">세트</h3>
+          <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border-2 border-brand-200 bg-white">
+            {sets.map((s) => {
+              const sub = setSubtotal(s, pm);
+              const fin = setFinal(s, pm);
+              const disc = Number(s.data.discount) || 0;
+              const items = (s.data.items ?? [])
+                .map((it: any) => `${it.name}×${it.qty}`)
+                .join(" · ");
+              return (
+                <div key={s.id} className="flex items-center gap-3 p-3">
+                  <div className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-brand-50 text-lg">
+                    🥂
+                  </div>
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-base font-bold text-slate-800">{s.data.setName}</p>
+                    {items && <p className="truncate text-xs text-slate-400">{items}</p>}
+                  </div>
+                  <div className="shrink-0 text-right">
+                    {disc > 0 && (
+                      <span className="mr-1.5 text-xs text-slate-400 line-through">{won(sub)}</span>
+                    )}
+                    <span className="text-lg font-extrabold text-brand-600">{won(fin)}</span>
+                    {disc > 0 && (
+                      <span className="ml-1 text-[11px] font-semibold text-red-500">
+                        −{won(disc)}
+                      </span>
+                    )}
+                  </div>
+                  <span className="shrink-0 rounded-md bg-violet-100 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 ring-1 ring-inset ring-violet-200">
+                    세트
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </section>
       )}
@@ -186,10 +283,7 @@ function SupplyBoard({
     setBusyId(row.id);
     const qty = Math.max(0, Number(row.data.qty ?? 0) + delta);
     try {
-      await api.upsertRecord(user.token, row.id, "supply", activeAffiliation, {
-        ...row.data,
-        qty,
-      });
+      await api.upsertRecord(user.token, row.id, "supply", activeAffiliation, { ...row.data, qty });
       onChange();
     } finally {
       setBusyId(null);
@@ -276,7 +370,7 @@ function SupplyBoard({
   );
 }
 
-/* ---------- 주류구성 (운영진+ : name/price + sets) ---------- */
+/* ---------- 주류구성 (운영진+ : 이름/가격/사진/종류 + 세트·할인) ---------- */
 function LiquorConfig({
   liquors,
   sets,
@@ -291,6 +385,8 @@ function LiquorConfig({
   const { user, activeAffiliation } = useAuth();
   const [lname, setLname] = useState("");
   const [lprice, setLprice] = useState("");
+  const [lcat, setLcat] = useState("");
+  const [limg, setLimg] = useState<string>("");
   const [setName, setSetName] = useState("");
 
   if (!canEdit)
@@ -301,16 +397,20 @@ function LiquorConfig({
     await api.upsertRecord(user.token, null, "liquor", activeAffiliation, {
       name: lname.trim(),
       price: lprice === "" ? 0 : Number(lprice),
+      category: lcat || undefined,
+      image: limg || undefined,
     });
     setLname("");
     setLprice("");
+    setLcat("");
+    setLimg("");
     onChange();
   }
-  async function editLiquorPrice(row: Rec, price: string) {
+  async function saveLiquor(row: Rec, patch: Record<string, any>) {
     if (!user) return;
     await api.upsertRecord(user.token, row.id, "liquor", activeAffiliation, {
       ...row.data,
-      price: price === "" ? 0 : Number(price),
+      ...patch,
     });
     onChange();
   }
@@ -325,8 +425,17 @@ function LiquorConfig({
     await api.upsertRecord(user.token, null, "liquor_set", activeAffiliation, {
       setName: setName.trim(),
       items: [],
+      discount: 0,
     });
     setSetName("");
+    onChange();
+  }
+  async function saveSet(row: Rec, patch: Record<string, any>) {
+    if (!user) return;
+    await api.upsertRecord(user.token, row.id, "liquor_set", activeAffiliation, {
+      ...row.data,
+      ...patch,
+    });
     onChange();
   }
   async function delSet(row: Rec) {
@@ -334,44 +443,59 @@ function LiquorConfig({
     await api.deleteRecord(user.token, row.id);
     onChange();
   }
-  async function addSetItem(row: Rec, name: string, qty: number) {
-    if (!user || !name) return;
-    const items = [...(row.data.items ?? []), { name, qty }];
-    await api.upsertRecord(user.token, row.id, "liquor_set", activeAffiliation, {
-      ...row.data,
-      items,
-    });
-    onChange();
-  }
-  async function removeSetItem(row: Rec, idx: number) {
-    if (!user) return;
-    const items = (row.data.items ?? []).filter((_: any, i: number) => i !== idx);
-    await api.upsertRecord(user.token, row.id, "liquor_set", activeAffiliation, {
-      ...row.data,
-      items,
-    });
-    onChange();
-  }
 
   return (
     <div className="space-y-8">
       {/* liquors */}
       <section>
-        <h3 className="mb-3 text-sm font-bold text-slate-700">주류 단품 · 가격</h3>
-        <div className="mb-3 flex flex-wrap gap-2">
+        <h3 className="mb-3 text-sm font-bold text-slate-700">주류 단품 · 가격 · 사진 · 종류</h3>
+
+        {/* add form */}
+        <div className="mb-3 flex flex-wrap items-center gap-2 rounded-2xl border border-slate-200 bg-slate-50/60 p-3">
           <input
             value={lname}
             onChange={(e) => setLname(e.target.value)}
             placeholder="주류명"
-            className="w-40 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:bg-white"
+            className="w-40 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500"
           />
           <input
             value={lprice}
             onChange={(e) => setLprice(e.target.value)}
             type="number"
             placeholder="가격(원)"
-            className="w-32 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:bg-white"
+            className="w-28 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-brand-500"
           />
+          <select
+            value={lcat}
+            onChange={(e) => setLcat(e.target.value)}
+            className="rounded-lg border border-slate-200 bg-white px-2 py-2 text-sm outline-none focus:border-brand-500"
+          >
+            <option value="">종류</option>
+            {CATEGORIES.map((c) => (
+              <option key={c} value={c}>
+                {c}
+              </option>
+            ))}
+          </select>
+          <label className="flex cursor-pointer items-center gap-2">
+            {limg ? (
+              <Thumb src={limg} />
+            ) : (
+              <span className="grid h-11 w-11 place-items-center rounded-lg border border-dashed border-slate-300 bg-white text-slate-400">
+                📷
+              </span>
+            )}
+            <input
+              type="file"
+              accept="image/*"
+              className="hidden"
+              onChange={async (e) => {
+                const f = e.target.files?.[0];
+                if (f) setLimg(await fileToThumb(f));
+              }}
+            />
+            <span className="text-xs text-slate-500">{limg ? "사진 변경" : "사진 추가"}</span>
+          </label>
           <button
             onClick={addLiquor}
             className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
@@ -379,18 +503,46 @@ function LiquorConfig({
             추가
           </button>
         </div>
+
+        {/* list */}
         <div className="divide-y divide-slate-100 rounded-2xl border border-slate-200 bg-white">
           {liquors.length === 0 && (
             <p className="p-4 text-sm text-slate-400">등록된 주류가 없습니다.</p>
           )}
           {liquors.map((l) => (
-            <div key={l.id} className="flex items-center gap-3 p-3">
-              <span className="flex-1 font-medium text-slate-800">{l.data.name}</span>
+            <div key={l.id} className="flex flex-wrap items-center gap-2.5 p-3">
+              <label className="cursor-pointer">
+                <Thumb src={l.data.image} />
+                <input
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={async (e) => {
+                    const f = e.target.files?.[0];
+                    if (f) saveLiquor(l, { image: await fileToThumb(f) });
+                  }}
+                />
+              </label>
+              <span className="min-w-[6rem] flex-1 font-medium text-slate-800">{l.data.name}</span>
+              <select
+                defaultValue={l.data.category ?? ""}
+                onChange={(e) => saveLiquor(l, { category: e.target.value || undefined })}
+                className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-sm outline-none focus:border-brand-500"
+              >
+                <option value="">종류</option>
+                {CATEGORIES.map((c) => (
+                  <option key={c} value={c}>
+                    {c}
+                  </option>
+                ))}
+              </select>
               <input
                 defaultValue={l.data.price ?? 0}
                 type="number"
-                onBlur={(e) => editLiquorPrice(l, e.target.value)}
-                className="w-28 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-right text-sm outline-none focus:border-brand-500 focus:bg-white"
+                onBlur={(e) =>
+                  saveLiquor(l, { price: e.target.value === "" ? 0 : Number(e.target.value) })
+                }
+                className="w-24 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-right text-sm outline-none focus:border-brand-500"
               />
               <span className="text-sm text-slate-400">원</span>
               <button
@@ -406,7 +558,7 @@ function LiquorConfig({
 
       {/* sets */}
       <section>
-        <h3 className="mb-3 text-sm font-bold text-slate-700">세트 구성</h3>
+        <h3 className="mb-3 text-sm font-bold text-slate-700">세트 구성 · 할인</h3>
         <div className="mb-3 flex gap-2">
           <input
             value={setName}
@@ -427,8 +579,7 @@ function LiquorConfig({
               key={s.id}
               set={s}
               liquors={liquors}
-              onAddItem={addSetItem}
-              onRemoveItem={removeSetItem}
+              onSave={saveSet}
               onDelete={delSet}
             />
           ))}
@@ -441,18 +592,33 @@ function LiquorConfig({
 function SetEditor({
   set,
   liquors,
-  onAddItem,
-  onRemoveItem,
+  onSave,
   onDelete,
 }: {
   set: Rec;
   liquors: Rec[];
-  onAddItem: (row: Rec, name: string, qty: number) => void;
-  onRemoveItem: (row: Rec, idx: number) => void;
+  onSave: (row: Rec, patch: Record<string, any>) => void;
   onDelete: (row: Rec) => void;
 }) {
   const [sel, setSel] = useState("");
   const [qty, setQty] = useState("1");
+  const pm = priceMapOf(liquors);
+  const sub = setSubtotal(set, pm);
+  const disc = Number(set.data.discount) || 0;
+  const fin = Math.max(0, sub - disc);
+
+  function addItem() {
+    if (!sel) return;
+    const items = [...(set.data.items ?? []), { name: sel, qty: Math.max(1, Number(qty) || 1) }];
+    onSave(set, { items });
+    setSel("");
+    setQty("1");
+  }
+  function removeItem(idx: number) {
+    const items = (set.data.items ?? []).filter((_: any, i: number) => i !== idx);
+    onSave(set, { items });
+  }
+
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">
       <div className="mb-2 flex items-center justify-between">
@@ -464,14 +630,18 @@ function SetEditor({
           세트 삭제
         </button>
       </div>
+
       <ul className="mb-3 space-y-1">
         {(set.data.items ?? []).map((it: any, i: number) => (
           <li key={i} className="flex items-center justify-between text-sm">
             <span className="text-slate-700">
               {it.name} <span className="font-semibold">×{it.qty}</span>
+              <span className="ml-2 text-xs text-slate-400">
+                {won((pm[it.name] || 0) * (Number(it.qty) || 0))}
+              </span>
             </span>
             <button
-              onClick={() => onRemoveItem(set, i)}
+              onClick={() => removeItem(i)}
               className="text-xs text-slate-400 hover:text-red-500"
             >
               제거
@@ -482,7 +652,8 @@ function SetEditor({
           <li className="text-xs text-slate-400">구성 주류를 추가하세요.</li>
         )}
       </ul>
-      <div className="flex gap-2">
+
+      <div className="mb-3 flex gap-2">
         <select
           value={sel}
           onChange={(e) => setSel(e.target.value)}
@@ -503,17 +674,32 @@ function SetEditor({
           className="w-16 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-sm outline-none focus:border-brand-500"
         />
         <button
-          onClick={() => {
-            if (sel) {
-              onAddItem(set, sel, Math.max(1, Number(qty) || 1));
-              setSel("");
-              setQty("1");
-            }
-          }}
+          onClick={addItem}
           className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50"
         >
           추가
         </button>
+      </div>
+
+      {/* 할인 + 합계 */}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-slate-50 px-3 py-2">
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-semibold text-slate-500">가격할인</span>
+          <input
+            defaultValue={disc}
+            type="number"
+            min={0}
+            onBlur={(e) =>
+              onSave(set, { discount: e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)) })
+            }
+            className="w-28 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-right text-sm outline-none focus:border-brand-500"
+          />
+          <span className="text-xs text-slate-400">원 할인</span>
+        </div>
+        <div className="text-sm">
+          <span className="text-slate-400">정가 {won(sub)} · </span>
+          <span className="font-extrabold text-brand-600">판매가 {won(fin)}</span>
+        </div>
       </div>
     </div>
   );
@@ -551,8 +737,11 @@ function Inventory({ liquors, supplies }: { liquors: Rec[]; supplies: Rec[] }) {
         ) : (
           <ul className="divide-y divide-slate-100">
             {liquors.map((l) => (
-              <li key={l.id} className="flex justify-between py-2 text-sm">
-                <span className="text-slate-700">{l.data.name}</span>
+              <li key={l.id} className="flex items-center justify-between py-2 text-sm">
+                <span className="flex items-center gap-2 text-slate-700">
+                  {l.data.name}
+                  <CatPill c={l.data.category} />
+                </span>
                 <span className="font-semibold text-slate-800">{won(l.data.price)}</span>
               </li>
             ))}
