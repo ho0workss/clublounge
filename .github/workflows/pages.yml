@@ -4,9 +4,10 @@ on:
   push:
     branches:
       - claude/webpage-github-vercel-supabase-bhdskz
-    # 아래 '생성물' 경로만 바뀐 커밋은 재실행하지 않는다(루프 방지).
+    # '생성물' 경로만 바뀐 커밋은 재실행하지 않는다(루프 방지).
     paths-ignore:
       - ".nojekyll"
+      - "_config.yml"
       - "index.html"
       - "index.txt"
       - "404.html"
@@ -16,9 +17,10 @@ on:
       - "docs/**"
   workflow_dispatch:
 
-# 현재 Pages 소스 폴더 설정이 '/ (root)' 이든 '/docs' 이든 모두 동작하도록,
-# 빌드 결과(out/)를 브랜치 루트와 docs/ 양쪽에 .nojekyll 과 함께 올린다.
-# .nojekyll 이 있어야 Jekyll 이 '_next'(언더스코어 폴더)를 지우지 않는다.
+# GitHub Pages 의 브랜치 빌드는 Jekyll 을 무조건 실행하며 .nojekyll 을 무시한다.
+# Jekyll 은 언더스코어(_) 폴더를 기본 제외하므로 Next.js 의 '_next'(앱 JS/CSS)가 사라진다.
+# 해결: _config.yml 에 include: ["_next"] 를 넣어 Jekyll 이 _next 를 보존하게 한다.
+# 소스 폴더가 '/ (root)' 이든 '/docs' 이든 동작하도록 루트와 docs/ 양쪽에 발행한다.
 permissions:
   contents: write
 
@@ -43,16 +45,18 @@ jobs:
       - name: Publish static export (branch root + /docs)
         run: |
           set -e
+          # Jekyll 이 _next 를 보존하도록 설정
+          printf 'include: ["_next"]\n' > out/_config.yml
           # /docs 미러
           rm -rf docs
           cp -a out docs
           touch docs/.nojekyll
-          # 브랜치 루트에도 배치 (소스 파일과 이름이 겹치지 않음)
+          # 브랜치 루트에도 배치
           cp -a out/. ./
           touch .nojekyll
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add .nojekyll index.html index.txt 404.html 404 _next dashboard docs
+          git add .nojekyll _config.yml index.html index.txt 404.html 404 _next dashboard docs
           if git diff --cached --quiet; then
             echo "no site changes"
           else
