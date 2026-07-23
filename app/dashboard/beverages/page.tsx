@@ -40,10 +40,10 @@ function Thumb({ src, fallback = "🍶" }: { src?: string; fallback?: string }) 
     <img
       src={src}
       alt=""
-      className="h-11 w-11 shrink-0 rounded-lg object-cover ring-1 ring-slate-200"
+      className="h-9 w-9 shrink-0 rounded-lg object-cover ring-1 ring-slate-200 sm:h-11 sm:w-11"
     />
   ) : (
-    <div className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-slate-100 text-lg">
+    <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-slate-100 text-base sm:h-11 sm:w-11 sm:text-lg">
       {fallback}
     </div>
   );
@@ -195,12 +195,12 @@ function LiquorBoard({ liquors, sets }: { liquors: Rec[]; sets: Rec[] }) {
           <h3 className="mb-2 text-sm font-bold text-slate-700">주류 단품</h3>
           <div className="divide-y divide-slate-100 overflow-hidden rounded-2xl border border-slate-200 bg-white">
             {liquors.map((l) => (
-              <div key={l.id} className="flex items-center gap-3 p-3">
+              <div key={l.id} className="flex items-center gap-2 p-2.5 sm:gap-3 sm:p-3">
                 <Thumb src={l.data.image} />
-                <span className="min-w-0 flex-1 truncate text-base font-bold text-slate-800">
+                <span className="min-w-0 flex-1 truncate text-sm font-bold text-slate-800 sm:text-base">
                   {l.data.name}
                 </span>
-                <span className="shrink-0 text-lg font-extrabold text-brand-600">
+                <span className="shrink-0 text-sm font-extrabold text-brand-600 sm:text-lg">
                   {won(l.data.price)}
                 </span>
                 <CatPill c={l.data.category} />
@@ -222,28 +222,32 @@ function LiquorBoard({ liquors, sets }: { liquors: Rec[]; sets: Rec[] }) {
                 .map((it: any) => `${it.name}×${it.qty}`)
                 .join(" · ");
               return (
-                <div key={s.id} className="flex items-center gap-3 p-3">
-                  <div className="grid h-11 w-11 shrink-0 place-items-center rounded-lg bg-brand-50 text-lg">
+                <div key={s.id} className="flex items-center gap-2 p-2.5 sm:gap-3 sm:p-3">
+                  <div className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-brand-50 text-base sm:h-11 sm:w-11 sm:text-lg">
                     🥂
                   </div>
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-base font-bold text-slate-800">{s.data.setName}</p>
-                    {items && <p className="truncate text-xs text-slate-400">{items}</p>}
+                    <p className="truncate text-sm font-bold text-slate-800 sm:text-base">
+                      {s.data.setName}
+                    </p>
+                    {items && <p className="truncate text-[11px] text-slate-400 sm:text-xs">{items}</p>}
                   </div>
-                  <div className="shrink-0 text-right">
+                  <div className="shrink-0 text-right leading-tight">
+                    <div className="text-sm font-extrabold text-brand-600 sm:text-lg">{won(fin)}</div>
                     {disc > 0 && (
-                      <span className="mr-1.5 text-xs text-slate-400 line-through">{won(sub)}</span>
-                    )}
-                    <span className="text-lg font-extrabold text-brand-600">{won(fin)}</span>
-                    {disc > 0 && (
-                      <span className="ml-1 text-[11px] font-semibold text-red-500">
-                        −{won(disc)}
-                      </span>
+                      <div className="text-[10px] sm:text-[11px]">
+                        <span className="text-slate-400 line-through">{won(sub)}</span>
+                        <span className="ml-1 font-semibold text-red-500">−{won(disc)}</span>
+                      </div>
                     )}
                   </div>
-                  <span className="shrink-0 rounded-md bg-violet-100 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 ring-1 ring-inset ring-violet-200">
-                    세트
-                  </span>
+                  {s.data.category ? (
+                    <CatPill c={s.data.category} />
+                  ) : (
+                    <span className="shrink-0 rounded-md bg-violet-100 px-1.5 py-0.5 text-[11px] font-medium text-violet-700 ring-1 ring-inset ring-violet-200">
+                      세트
+                    </span>
+                  )}
                 </div>
               );
             })}
@@ -523,7 +527,14 @@ function LiquorConfig({
                   }}
                 />
               </label>
-              <span className="min-w-[6rem] flex-1 font-medium text-slate-800">{l.data.name}</span>
+              <input
+                defaultValue={l.data.name}
+                onBlur={(e) => {
+                  const v = e.target.value.trim();
+                  if (v && v !== l.data.name) saveLiquor(l, { name: v });
+                }}
+                className="min-w-[6rem] flex-1 rounded-lg border border-transparent px-2 py-1.5 text-sm font-medium text-slate-800 outline-none hover:border-slate-200 focus:border-brand-500 focus:bg-white"
+              />
               <select
                 defaultValue={l.data.category ?? ""}
                 onChange={(e) => saveLiquor(l, { category: e.target.value || undefined })}
@@ -602,10 +613,15 @@ function SetEditor({
 }) {
   const [sel, setSel] = useState("");
   const [qty, setQty] = useState("1");
+  const [discInput, setDiscInput] = useState(String(Number(set.data.discount) || 0));
   const pm = priceMapOf(liquors);
   const sub = setSubtotal(set, pm);
   const disc = Number(set.data.discount) || 0;
   const fin = Math.max(0, sub - disc);
+
+  function applyDiscount() {
+    onSave(set, { discount: Math.max(0, Number(discInput) || 0) });
+  }
 
   function addItem() {
     if (!sel) return;
@@ -621,8 +637,27 @@ function SetEditor({
 
   return (
     <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <div className="mb-2 flex items-center justify-between">
-        <p className="font-bold text-slate-800">{set.data.setName}</p>
+      <div className="mb-2 flex flex-wrap items-center gap-2">
+        <input
+          defaultValue={set.data.setName}
+          onBlur={(e) => {
+            const v = e.target.value.trim();
+            if (v && v !== set.data.setName) onSave(set, { setName: v });
+          }}
+          className="min-w-[8rem] flex-1 rounded-lg border border-transparent px-2 py-1 text-base font-bold text-slate-800 outline-none hover:border-slate-200 focus:border-brand-500"
+        />
+        <select
+          defaultValue={set.data.category ?? ""}
+          onChange={(e) => onSave(set, { category: e.target.value || undefined })}
+          className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-sm outline-none focus:border-brand-500"
+        >
+          <option value="">종류</option>
+          {CATEGORIES.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
         <button
           onClick={() => onDelete(set)}
           className="rounded-md px-2 py-1 text-xs font-medium text-red-500 hover:bg-red-50"
@@ -686,15 +721,21 @@ function SetEditor({
         <div className="flex items-center gap-2">
           <span className="text-xs font-semibold text-slate-500">가격할인</span>
           <input
-            defaultValue={disc}
+            value={discInput}
+            onChange={(e) => setDiscInput(e.target.value)}
+            onKeyDown={(e) => e.key === "Enter" && applyDiscount()}
             type="number"
             min={0}
-            onBlur={(e) =>
-              onSave(set, { discount: e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)) })
-            }
-            className="w-28 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-right text-sm outline-none focus:border-brand-500"
+            placeholder="0"
+            className="w-24 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-right text-sm outline-none focus:border-brand-500"
           />
-          <span className="text-xs text-slate-400">원 할인</span>
+          <span className="text-xs text-slate-400">원</span>
+          <button
+            onClick={applyDiscount}
+            className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-brand-700"
+          >
+            적용
+          </button>
         </div>
         <div className="text-sm">
           <span className="text-slate-400">정가 {won(sub)} · </span>
