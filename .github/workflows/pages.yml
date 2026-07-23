@@ -6,17 +6,17 @@ on:
       - claude/webpage-github-vercel-supabase-bhdskz
   workflow_dispatch:
 
+# gh-pages 브랜치에 빌드 결과를 푸시한다. contents:write 만 있으면 되므로
+# Pages API(사이트 생성) 권한이 없어도 동작한다.
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write
 
 concurrency:
-  group: pages
+  group: pages-branch
   cancel-in-progress: true
 
 jobs:
-  build:
+  build-deploy:
     runs-on: ubuntu-latest
     env:
       GITHUB_PAGES: "true"
@@ -25,28 +25,15 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Configure Pages (auto-enable)
-        uses: actions/configure-pages@v5
-        with:
-          enablement: true
       - name: Install deps
         run: npm ci || npm install
       - name: Build static export
         run: npm run build
       - name: Disable Jekyll
         run: touch out/.nojekyll
-      - name: Upload artifact
-        uses: actions/upload-pages-artifact@v3
+      - name: Publish to gh-pages
+        uses: peaceiris/actions-gh-pages@v4
         with:
-          path: ./out
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./out
+          publish_branch: gh-pages
