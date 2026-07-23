@@ -29,11 +29,19 @@ jobs:
         run: npm ci || npm install
       - name: Build static export
         run: npm run build
-      - name: Disable Jekyll
-        run: touch out/.nojekyll
+      # Pages 소스 폴더를 '/ (root)'로 잡든 '/docs'로 잡든 모두 동작하도록
+      # 빌드 결과(out/)를 루트와 docs/ 양쪽에 배치한다. basePath 가 절대경로(/clublounge)라
+      # 어느 폴더에서 서빙해도 자산이 정상 로드된다.
+      - name: Stage site (root + /docs mirror)
+        run: |
+          rm -rf _site
+          mkdir -p _site/docs
+          cp -a out/. _site/
+          cp -a out/. _site/docs/
+          touch _site/.nojekyll _site/docs/.nojekyll
       - name: Publish to gh-pages
         uses: peaceiris/actions-gh-pages@v4
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: ./out
+          publish_dir: ./_site
           publish_branch: gh-pages
