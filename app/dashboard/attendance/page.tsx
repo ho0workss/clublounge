@@ -15,9 +15,7 @@ function todayMonth() {
   const d = new Date();
   return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}`;
 }
-function todayStr() {
-  return fmt(new Date());
-}
+const todayStr = () => fmt(new Date());
 function shiftMonth(ym: string, delta: number) {
   const [y, m] = ym.split("-").map(Number);
   const d = new Date(y, m - 1 + delta, 1);
@@ -28,6 +26,7 @@ const prettyMonth = (ym: string) => {
   return `${y}년 ${m}월`;
 };
 function prettyDay(ds: string) {
+  if (!ds) return "-";
   const [y, m, d] = ds.split("-").map(Number);
   const wd = ["일", "월", "화", "수", "목", "금", "토"][new Date(y, m - 1, d).getDay()];
   return `${m}/${d}(${wd})`;
@@ -42,7 +41,7 @@ function nowKST() {
   }).format(new Date());
 }
 
-/** 대한민국 공휴일(대체공휴일 포함, 근사치 — 2025~2027) */
+/** 대한민국 공휴일(대체공휴일 포함) — 설정에서 추가 가능 */
 const HOLIDAYS = new Set<string>([
   // 2025
   "2025-01-01", "2025-01-27", "2025-01-28", "2025-01-29", "2025-01-30",
@@ -62,7 +61,7 @@ const HOLIDAYS = new Set<string>([
   "2027-10-03", "2027-10-04", "2027-10-09", "2027-10-11", "2027-12-25",
 ]);
 
-/** 영업일: 금·토 + 공휴일 전날 (+ 사용자가 추가한 공휴일 반영) */
+/** 영업일: 금·토 + 공휴일 전날 */
 function operatingDates(ym: string, extra: string[] = []): string[] {
   const [y, m] = ym.split("-").map(Number);
   const dim = new Date(y, m, 0).getDate();
@@ -70,27 +69,26 @@ function operatingDates(ym: string, extra: string[] = []): string[] {
   const res: string[] = [];
   for (let d = 1; d <= dim; d++) {
     const date = new Date(y, m - 1, d);
-    const dow = date.getDay(); // 0 일 … 6 토
+    const dow = date.getDay();
     const nextDs = fmt(new Date(y, m - 1, d + 1));
     if (dow === 5 || dow === 6 || all.has(nextDs)) res.push(fmt(date));
   }
   return res;
 }
-/** 그 날짜가 '공휴일 전날'이라서 포함됐는지 */
 function isHolidayEve(ds: string, extra: string[] = []) {
+  if (!ds) return false;
   const [y, m, d] = ds.split("-").map(Number);
   const next = fmt(new Date(y, m - 1, d + 1));
   return HOLIDAYS.has(next) || extra.includes(next);
 }
-/** 연속된 영업일 묶음 안에서의 '오픈 N일차' */
+/** 연속 영업일 묶음 내 '오픈 N일차' */
 function openIndexMap(dates: string[]): Record<string, number> {
   const map: Record<string, number> = {};
   let idx = 0;
   for (let i = 0; i < dates.length; i++) {
-    const prev = i > 0 ? dates[i - 1] : null;
     let consecutive = false;
-    if (prev) {
-      const a = new Date(prev + "T00:00:00");
+    if (i > 0) {
+      const a = new Date(dates[i - 1] + "T00:00:00");
       const b = new Date(dates[i] + "T00:00:00");
       consecutive = (b.getTime() - a.getTime()) / 86400000 === 1;
     }
@@ -101,10 +99,15 @@ function openIndexMap(dates: string[]): Record<string, number> {
 }
 const RATE_TIERS = [1, 2, 3];
 
+/* ---- 개인 데이터 헬퍼 ---- */
+const attOf = (r: Rec, d: string) => (r.data.att ?? {})[d] ?? {};
+const guestsOf = (r: Rec, d: string) => Number(attOf(r, d).guests) || 0;
+const isPresent = (r: Rec, d: string) => !!attOf(r, d).in;
+
 export default function AttendancePage() {
   const { user, activeAffiliation } = useAuth();
   const role = user?.role ?? "member";
-  const canManage = ROLE_RANK[role] >= ROLE_RANK.operator; // 운영진 이상
+  const canManage = ROLE_RANK[role] >= ROLE_RANK.operator;
   const needsAff = role === "master" && !activeAffiliation;
 
   const [rows, setRows] = useState<Rec[]>([]);
@@ -118,22 +121,17 @@ export default function AttendancePage() {
     () => (configRow?.data?.holidays ?? []) as string[],
     [configRow]
   );
-
-  const opDates = useMemo(
-    () => operatingDates(month, customHolidays),
-    [month, customHolidays]
-  );
+  const opDates = useMemo(() => operatingDates(month, customHolidays), [month, customHolidays]);
   const openIdx = useMemo(() => openIndexMap(opDates), [opDates]);
 
   const [date, setDate] = useState<string>("");
   useEffect(() => {
-    // 월이 바뀌면 그 달의 영업일 중 오늘 이후(없으면 첫 영업일)로
     if (opDates.length === 0) {
       setDate("");
       return;
     }
     const t = todayStr();
-    setDate(opDates.find((d) => d >= t) ?? opDates[0]);
+    setDate(opDates.find((d) => d >= t) ?? opDates[opDates.length - 1]);
   }, [opDates]);
 
   const load = useCallback(async () => {
@@ -157,25 +155,51 @@ export default function AttendancePage() {
   const opRows = useMemo(() => rows.filter((r) => r.data.group === "operator"), [rows]);
   const config = configRow;
   const guestPay = Number(config?.data?.guestPay) || 0;
-  const guests = (config?.data?.guests ?? {}) as Record<string, number>;
 
+  /** 오픈 일차별 기본 급여: 개인 설정 > 공통 설정 */
   const rateFor = useCallback(
-    (d: string) => {
-      const idx = Math.min(openIdx[d] ?? 1, RATE_TIERS.length);
-      return Number(config?.data?.opRates?.[String(idx)]) || 0;
+    (person: Rec, d: string) => {
+      const tier = String(Math.min(openIdx[d] ?? 1, RATE_TIERS.length));
+      const personal = person.data.rates?.[tier];
+      if (personal !== undefined && personal !== null && personal !== "") return Number(personal);
+      return Number(config?.data?.opRates?.[tier]) || 0;
     },
     [openIdx, config]
   );
+  /** 그 날짜의 급여(개별 조정 우선) */
+  const payFor = useCallback(
+    (person: Rec, d: string) => {
+      const ov = person.data.pay?.[d];
+      if (ov !== undefined && ov !== null && ov !== "") return Number(ov);
+      return rateFor(person, d);
+    },
+    [rateFor]
+  );
 
   // ---- persistence ----
-  async function savePerson(row: Rec, patch: Record<string, any>) {
-    if (!user) return;
-    await api.upsertRecord(user.token, row.id, "attendance", activeAffiliation, {
-      ...row.data,
-      ...patch,
-    });
-    load();
-  }
+  const savePerson = useCallback(
+    async (row: Rec, patch: Record<string, any>) => {
+      if (!user) return;
+      setRows((prev) =>
+        prev.map((r) => (r.id === row.id ? { ...r, data: { ...r.data, ...patch } } : r))
+      );
+      await api.upsertRecord(user.token, row.id, "attendance", activeAffiliation, {
+        ...row.data,
+        ...patch,
+      });
+      load();
+    },
+    [user, activeAffiliation, load]
+  );
+  const patchAtt = useCallback(
+    (row: Rec, d: string, patch: Record<string, any>) => {
+      if (!d) return;
+      const att = row.data.att ?? {};
+      return savePerson(row, { att: { ...att, [d]: { ...(att[d] ?? {}), ...patch } } });
+    },
+    [savePerson]
+  );
+
   async function addPerson(group: "operator" | "sales", name: string, team?: string) {
     if (!user || !name.trim()) return;
     await api.upsertRecord(user.token, null, "attendance", activeAffiliation, {
@@ -197,16 +221,11 @@ export default function AttendancePage() {
       group: "config",
       guestPay: 0,
       opRates: {},
-      guests: {},
       holidays: [],
       ...(config?.data ?? {}),
       ...patch,
     });
     load();
-  }
-  async function setGuestCount(d: string, next: number) {
-    const g = { ...guests, [d]: Math.max(0, next) };
-    await saveConfig({ guests: g });
   }
 
   const tabs: { id: Tab; label: string; icon: string; manageOnly?: boolean }[] = [
@@ -247,7 +266,6 @@ export default function AttendancePage() {
             ))}
           </div>
 
-          {/* 월/일 네비게이션 (영업진·운영진 탭) */}
           {activeTab !== "config" && (
             <div className="mb-4 space-y-2">
               <div className="flex flex-wrap items-center gap-2">
@@ -320,10 +338,8 @@ export default function AttendancePage() {
               viewMode={viewMode}
               date={date}
               opDates={opDates}
-              guests={guests}
               guestPay={guestPay}
-              onCheck={(row, patch) => savePerson(row, patch)}
-              onGuest={setGuestCount}
+              onAtt={patchAtt}
             />
           ) : activeTab === "operator" ? (
             <OperatorView
@@ -332,10 +348,10 @@ export default function AttendancePage() {
               date={date}
               opDates={opDates}
               openIdx={openIdx}
-              rateFor={rateFor}
-              onPay={(row, d, amt) =>
-                savePerson(row, { pay: { ...(row.data.pay ?? {}), [d]: amt } })
-              }
+              guestPay={guestPay}
+              payFor={payFor}
+              onAtt={patchAtt}
+              onPay={(row, d, amt) => savePerson(row, { pay: { ...(row.data.pay ?? {}), [d]: amt } })}
             />
           ) : (
             <ConfigView
@@ -360,19 +376,15 @@ function SalesView({
   viewMode,
   date,
   opDates,
-  guests,
   guestPay,
-  onCheck,
-  onGuest,
+  onAtt,
 }: {
   rows: Rec[];
   viewMode: ViewMode;
   date: string;
   opDates: string[];
-  guests: Record<string, number>;
   guestPay: number;
-  onCheck: (row: Rec, patch: Record<string, any>) => void;
-  onGuest: (date: string, next: number) => void;
+  onAtt: (row: Rec, date: string, patch: Record<string, any>) => void;
 }) {
   const teams = useMemo(() => {
     const t: Record<string, Rec[]> = {};
@@ -381,80 +393,72 @@ function SalesView({
   }, [rows]);
   const teamNames = Object.keys(teams).sort();
 
-  const guestCount = Number(guests[date]) || 0;
-  const monthGuests = opDates.reduce((s, d) => s + (Number(guests[d]) || 0), 0);
+  const guestsIn = (r: Rec) =>
+    viewMode === "day" ? guestsOf(r, date) : opDates.reduce((s, d) => s + guestsOf(r, d), 0);
+  const teamGuests = (list: Rec[]) => list.reduce((s, r) => s + guestsIn(r), 0);
+  const totalGuests = teamGuests(rows);
+
+  if (rows.length === 0)
+    return <Empty text="등록된 영업진이 없습니다. ‘출근인원 설정’에서 추가하세요." />;
 
   return (
     <div className="space-y-4">
-      {/* 게스트 현황 */}
+      {/* 전체 게스트 요약 */}
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-4">
         <div>
-          <p className="text-sm font-bold text-slate-700">게스트 현황</p>
+          <p className="text-sm font-bold text-slate-700">게스트 합계</p>
           <p className="text-xs text-slate-400">
-            {viewMode === "day" ? prettyDay(date || "-") : `${prettyMonthShort(opDates)} 합계`} · 게스트페이{" "}
-            {won(guestPay)}
+            {viewMode === "day" ? prettyDay(date) : prettyMonth(opDates[0]?.slice(0, 7) ?? "")} ·
+            게스트페이 {won(guestPay)}
           </p>
         </div>
-        {viewMode === "day" ? (
-          <div className="flex items-center gap-3">
-            <div className="flex items-center gap-1.5">
-              <button
-                onClick={() => date && onGuest(date, guestCount - 1)}
-                disabled={!date}
-                className="grid h-8 w-8 place-items-center rounded-lg bg-slate-100 text-lg font-bold text-slate-600 hover:bg-slate-200 disabled:opacity-40"
-              >
-                −
-              </button>
-              <span className="w-10 text-center text-xl font-extrabold text-slate-800">{guestCount}</span>
-              <button
-                onClick={() => date && onGuest(date, guestCount + 1)}
-                disabled={!date}
-                className="grid h-8 w-8 place-items-center rounded-lg bg-brand-600 text-lg font-bold text-white hover:bg-brand-700 disabled:opacity-40"
-              >
-                +
-              </button>
-            </div>
-            <div className="text-right">
-              <p className="text-xs text-slate-400">금액</p>
-              <p className="text-lg font-extrabold text-brand-600">{won(guestPay * guestCount)}</p>
-            </div>
-          </div>
-        ) : (
-          <div className="text-right">
-            <p className="text-xs text-slate-400">월 게스트 {monthGuests}명</p>
-            <p className="text-lg font-extrabold text-brand-600">{won(guestPay * monthGuests)}</p>
-          </div>
-        )}
+        <div className="text-right">
+          <p className="text-xs text-slate-400">게스트 {totalGuests}명</p>
+          <p className="text-xl font-extrabold text-brand-600">{won(guestPay * totalGuests)}</p>
+        </div>
       </div>
 
-      {/* 팀별 토글 */}
-      {rows.length === 0 ? (
-        <Empty text="등록된 영업진이 없습니다. ‘출근인원 설정’에서 추가하세요." />
-      ) : (
-        teamNames.map((team) => (
+      {teamNames.map((team) => {
+        const g = teamGuests(teams[team]);
+        return (
           <Accordion
             key={team}
             title={team}
             badge={<TeamBadge />}
             count={`${teams[team].length}명`}
+            right={
+              <span className="flex items-center gap-1.5 text-xs">
+                <span className="rounded-md bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-700 ring-1 ring-inset ring-amber-200">
+                  게스트 {g}
+                </span>
+                <span className="font-extrabold text-brand-600">{won(guestPay * g)}</span>
+              </span>
+            }
             defaultOpen
           >
             <div className="divide-y divide-slate-50 p-2">
               {teams[team].map((r) => {
-                const att = (r.data.att ?? {})[date] ?? {};
                 if (viewMode === "month") {
-                  const days = opDates.filter((d) => (r.data.att ?? {})[d]?.in).length;
+                  const days = opDates.filter((d) => isPresent(r, d)).length;
+                  const g2 = opDates.reduce((s, d) => s + guestsOf(r, d), 0);
                   return (
-                    <div key={r.id} className="flex items-center justify-between px-2 py-2 text-sm">
+                    <div
+                      key={r.id}
+                      className="flex flex-wrap items-center justify-between gap-2 px-2 py-2 text-sm"
+                    >
                       <span className="font-semibold text-slate-800">{r.data.name}</span>
                       <span className="text-slate-500">
-                        출근 <b className="text-brand-600">{days}</b> / {opDates.length}일
+                        출근 <b className="text-brand-600">{days}</b>/{opDates.length}일 · 게스트{" "}
+                        <b className="text-amber-600">{g2}</b>명 ·{" "}
+                        <b className="text-brand-600">{won(guestPay * g2)}</b>
                       </span>
                     </div>
                   );
                 }
+                const att = attOf(r, date);
+                const g2 = guestsOf(r, date);
                 return (
-                  <div key={r.id} className="flex items-center justify-between gap-2 px-2 py-2">
+                  <div key={r.id} className="flex flex-wrap items-center gap-2 px-2 py-2">
                     <span className="min-w-0 flex-1 truncate font-semibold text-slate-800">
                       {r.data.name}
                     </span>
@@ -464,68 +468,32 @@ function SalesView({
                         time={att.in}
                         tone="in"
                         disabled={!date}
-                        onClick={() =>
-                          onCheck(r, {
-                            att: {
-                              ...(r.data.att ?? {}),
-                              [date]: { ...att, in: att.in ? undefined : nowKST() },
-                            },
-                          })
-                        }
+                        onClick={() => onAtt(r, date, { in: att.in ? undefined : nowKST() })}
                       />
                       <CheckBtn
                         label="퇴근"
                         time={att.out}
                         tone="out"
                         disabled={!date}
-                        onClick={() =>
-                          onCheck(r, {
-                            att: {
-                              ...(r.data.att ?? {}),
-                              [date]: { ...att, out: att.out ? undefined : nowKST() },
-                            },
-                          })
-                        }
+                        onClick={() => onAtt(r, date, { out: att.out ? undefined : nowKST() })}
                       />
                     </div>
+                    <GuestStepper
+                      value={g2}
+                      disabled={!date}
+                      onChange={(n) => onAtt(r, date, { guests: n })}
+                    />
+                    <span className="w-20 shrink-0 text-right text-sm font-bold text-brand-600">
+                      {won(guestPay * g2)}
+                    </span>
                   </div>
                 );
               })}
             </div>
           </Accordion>
-        ))
-      )}
+        );
+      })}
     </div>
-  );
-}
-
-function CheckBtn({
-  label,
-  time,
-  tone,
-  disabled,
-  onClick,
-}: {
-  label: string;
-  time?: string;
-  tone: "in" | "out";
-  disabled?: boolean;
-  onClick: () => void;
-}) {
-  const on = !!time;
-  const onCls =
-    tone === "in" ? "bg-emerald-500 text-white" : "bg-sky-500 text-white";
-  return (
-    <button
-      onClick={onClick}
-      disabled={disabled}
-      className={`min-w-[3.6rem] rounded-lg px-2 py-1.5 text-xs font-bold transition disabled:opacity-40 ${
-        on ? onCls : "bg-slate-100 text-slate-500 hover:bg-slate-200"
-      }`}
-    >
-      {label}
-      {on && <span className="ml-1 font-semibold opacity-90">{time}</span>}
-    </button>
   );
 }
 
@@ -536,7 +504,9 @@ function OperatorView({
   date,
   opDates,
   openIdx,
-  rateFor,
+  guestPay,
+  payFor,
+  onAtt,
   onPay,
 }: {
   rows: Rec[];
@@ -544,16 +514,17 @@ function OperatorView({
   date: string;
   opDates: string[];
   openIdx: Record<string, number>;
-  rateFor: (d: string) => number;
+  guestPay: number;
+  payFor: (r: Rec, d: string) => number;
+  onAtt: (row: Rec, date: string, patch: Record<string, any>) => void;
   onPay: (row: Rec, date: string, amount: number) => void;
 }) {
   if (rows.length === 0)
     return <Empty text="등록된 운영진이 없습니다. ‘출근인원 설정’에서 추가하세요." />;
 
-  const payOf = (r: Rec, d: string) => {
-    const ov = r.data.pay?.[d];
-    return ov === undefined || ov === null || ov === "" ? rateFor(d) : Number(ov);
-  };
+  /** 출근한 날만 급여 인정 + 게스트 금액 */
+  const earned = (r: Rec, d: string) =>
+    (isPresent(r, d) ? payFor(r, d) : 0) + guestPay * guestsOf(r, d);
 
   if (viewMode === "month") {
     return (
@@ -562,15 +533,23 @@ function OperatorView({
           <thead>
             <tr className="border-b border-slate-100 text-left text-xs uppercase tracking-wide text-slate-400">
               <th className="px-4 py-3 font-semibold">운영진</th>
-              <th className="px-4 py-3 text-right font-semibold">월 급여 합계</th>
+              <th className="px-4 py-3 text-center font-semibold">출근</th>
+              <th className="px-4 py-3 text-center font-semibold">게스트</th>
+              <th className="px-4 py-3 text-right font-semibold">월 합계</th>
             </tr>
           </thead>
           <tbody>
             {rows.map((r) => {
-              const total = opDates.reduce((s, d) => s + payOf(r, d), 0);
+              const days = opDates.filter((d) => isPresent(r, d)).length;
+              const g = opDates.reduce((s, d) => s + guestsOf(r, d), 0);
+              const total = opDates.reduce((s, d) => s + earned(r, d), 0);
               return (
                 <tr key={r.id} className="border-b border-slate-50 last:border-0">
                   <td className="px-4 py-3 font-semibold text-slate-800">{r.data.name}</td>
+                  <td className="px-4 py-3 text-center text-slate-600">
+                    {days}/{opDates.length}일
+                  </td>
+                  <td className="px-4 py-3 text-center text-amber-600">{g}명</td>
                   <td className="px-4 py-3 text-right font-extrabold text-brand-600">{won(total)}</td>
                 </tr>
               );
@@ -581,35 +560,62 @@ function OperatorView({
     );
   }
 
-  // day view — 일자별 급여 조정
   return (
     <div className="space-y-2.5">
       <p className="text-xs text-slate-400">
-        {prettyDay(date || "-")} · 오픈 {openIdx[date] ?? "-"}일차 · 기본 급여 {won(rateFor(date))}{" "}
-        (설정값). 값을 바꾸면 이 날짜만 조정됩니다.
+        {prettyDay(date)} · 오픈 {openIdx[date] ?? "-"}일차 · <b>출근</b>을 눌러야 급여가 합산됩니다.
+        금액은 이 날짜만 개별 조정됩니다.
       </p>
-      {rows.map((r) => (
-        <div
-          key={r.id}
-          className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white p-3"
-        >
-          <span className="min-w-0 flex-1 truncate font-semibold text-slate-800">{r.data.name}</span>
-          <div className="flex items-center gap-1">
-            <input
-              key={`${r.id}-${date}`}
-              defaultValue={payOf(r, date)}
-              type="number"
-              min={0}
+      {rows.map((r) => {
+        const att = attOf(r, date);
+        const present = !!att.in;
+        const g = guestsOf(r, date);
+        return (
+          <div
+            key={r.id}
+            className={`flex flex-wrap items-center gap-2 rounded-2xl border p-3 transition ${
+              present ? "border-emerald-200 bg-emerald-50/40" : "border-slate-200 bg-white"
+            }`}
+          >
+            <span className="min-w-0 flex-1 truncate font-semibold text-slate-800">
+              {r.data.name}
+            </span>
+            <CheckBtn
+              label="출근"
+              time={att.in}
+              tone="in"
               disabled={!date}
-              onBlur={(e) =>
-                date && onPay(r, date, e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)))
-              }
-              className="w-28 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-right text-sm outline-none focus:border-brand-500 focus:bg-white disabled:opacity-40"
+              onClick={() => onAtt(r, date, { in: att.in ? undefined : nowKST() })}
             />
-            <span className="text-sm text-slate-400">원</span>
+            <GuestStepper
+              value={g}
+              disabled={!date}
+              onChange={(n) => onAtt(r, date, { guests: n })}
+            />
+            <div className="flex shrink-0 items-center gap-1">
+              <input
+                key={`${r.id}-${date}`}
+                defaultValue={payFor(r, date)}
+                type="number"
+                min={0}
+                disabled={!date}
+                onBlur={(e) =>
+                  date && onPay(r, date, e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)))
+                }
+                className="w-24 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-right text-sm outline-none focus:border-brand-500 focus:bg-white disabled:opacity-40"
+              />
+              <span className="text-xs text-slate-400">원</span>
+            </div>
+            <span
+              className={`w-24 shrink-0 text-right text-sm font-extrabold ${
+                present || g > 0 ? "text-brand-600" : "text-slate-300"
+              }`}
+            >
+              {won(earned(r, date))}
+            </span>
           </div>
-        </div>
-      ))}
+        );
+      })}
     </div>
   );
 }
@@ -649,7 +655,7 @@ function ConfigView({
 
   return (
     <div className="space-y-4">
-      {/* 게스트페이 + 운영진 요일별 금액 */}
+      {/* 금액 설정 */}
       <div className="rounded-2xl border border-slate-200 bg-white p-5">
         <h3 className="mb-3 text-sm font-bold text-slate-700">금액 설정</h3>
         <div className="flex flex-wrap items-end gap-4">
@@ -675,8 +681,11 @@ function ConfigView({
         </div>
 
         <div className="mt-5">
-          <p className="mb-2 text-xs font-semibold text-slate-500">
-            운영진 급여 — 오픈 일차별 기본 금액
+          <p className="mb-1 text-xs font-semibold text-slate-500">
+            운영진 공통 급여 — 오픈 일차별 기본 금액
+          </p>
+          <p className="mb-2 text-xs text-slate-400">
+            아래 ‘운영진 명단’에서 개인별로 다르게 지정할 수 있습니다(개인 설정이 우선).
           </p>
           <div className="flex flex-wrap items-end gap-3">
             {RATE_TIERS.map((t) => (
@@ -685,9 +694,7 @@ function ConfigView({
                 <div className="flex items-center gap-1">
                   <input
                     value={rateInputs[String(t)] ?? "0"}
-                    onChange={(e) =>
-                      setRateInputs((s) => ({ ...s, [String(t)]: e.target.value }))
-                    }
+                    onChange={(e) => setRateInputs((s) => ({ ...s, [String(t)]: e.target.value }))}
                     type="number"
                     min={0}
                     className="w-28 rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-right text-sm outline-none focus:border-brand-500 focus:bg-white"
@@ -699,12 +706,14 @@ function ConfigView({
             <button
               onClick={() => {
                 const opRates: Record<string, number> = {};
-                RATE_TIERS.forEach((t) => (opRates[String(t)] = Math.max(0, Number(rateInputs[String(t)]) || 0)));
+                RATE_TIERS.forEach(
+                  (t) => (opRates[String(t)] = Math.max(0, Number(rateInputs[String(t)]) || 0))
+                );
                 onSaveConfig({ opRates });
               }}
               className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
             >
-              급여 저장
+              공통 급여 저장
             </button>
           </div>
         </div>
@@ -716,7 +725,7 @@ function ConfigView({
         onSave={(list) => onSaveConfig({ holidays: list })}
       />
 
-      {/* 운영진 명단 */}
+      {/* 운영진 명단 — 개인별 급여 */}
       <Accordion title="운영진 명단" badge={<OpBadge />} count={`${opRows.length}명`} defaultOpen>
         <div className="space-y-2 p-3">
           <div className="flex gap-2">
@@ -738,17 +747,45 @@ function ConfigView({
             </button>
           </div>
           {opRows.map((r) => (
-            <div
-              key={r.id}
-              className="flex items-center justify-between rounded-lg border border-slate-100 px-3 py-2 text-sm"
-            >
-              <span className="font-semibold text-slate-800">{r.data.name}</span>
-              <button
-                onClick={() => onRemove(r)}
-                className="text-xs text-slate-400 hover:text-red-500"
-              >
-                삭제
-              </button>
+            <div key={r.id} className="rounded-xl border border-slate-100 p-3">
+              <div className="mb-2 flex items-center justify-between">
+                <span className="font-semibold text-slate-800">{r.data.name}</span>
+                <button
+                  onClick={() => onRemove(r)}
+                  className="text-xs text-slate-400 hover:text-red-500"
+                >
+                  삭제
+                </button>
+              </div>
+              <p className="mb-1.5 text-xs text-slate-400">
+                개인 급여(비우면 공통 설정 사용)
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {RATE_TIERS.map((t) => (
+                  <label key={t} className="block">
+                    <span className="mb-1 block text-[11px] text-slate-500">오픈 {t}일차</span>
+                    <div className="flex items-center gap-1">
+                      <input
+                        defaultValue={r.data.rates?.[String(t)] ?? ""}
+                        type="number"
+                        min={0}
+                        placeholder={String(Number(rates[String(t)]) || 0)}
+                        onBlur={(e) => {
+                          const v = e.target.value;
+                          onEditPerson(r, {
+                            rates: {
+                              ...(r.data.rates ?? {}),
+                              [String(t)]: v === "" ? undefined : Math.max(0, Number(v) || 0),
+                            },
+                          });
+                        }}
+                        className="w-24 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-right text-sm outline-none focus:border-brand-500 focus:bg-white"
+                      />
+                      <span className="text-xs text-slate-400">원</span>
+                    </div>
+                  </label>
+                ))}
+              </div>
             </div>
           ))}
         </div>
@@ -784,36 +821,38 @@ function ConfigView({
             </button>
           </div>
 
-          {Object.keys(teams).sort().map((team) => (
-            <Accordion key={team} title={team} badge={<TeamBadge />} count={`${teams[team].length}명`}>
-              <div className="space-y-2 p-2">
-                {teams[team].map((r) => (
-                  <div
-                    key={r.id}
-                    className="flex items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2 text-sm"
-                  >
-                    <span className="min-w-0 flex-1 truncate font-semibold text-slate-800">
-                      {r.data.name}
-                    </span>
-                    <input
-                      defaultValue={r.data.team || "미배정"}
-                      onBlur={(e) => {
-                        const v = e.target.value.trim();
-                        if (v && v !== r.data.team) onEditPerson(r, { team: v });
-                      }}
-                      className="w-24 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs outline-none focus:border-brand-500"
-                    />
-                    <button
-                      onClick={() => onRemove(r)}
-                      className="text-xs text-slate-400 hover:text-red-500"
+          {Object.keys(teams)
+            .sort()
+            .map((team) => (
+              <Accordion key={team} title={team} badge={<TeamBadge />} count={`${teams[team].length}명`}>
+                <div className="space-y-2 p-2">
+                  {teams[team].map((r) => (
+                    <div
+                      key={r.id}
+                      className="flex items-center justify-between gap-2 rounded-lg border border-slate-100 px-3 py-2 text-sm"
                     >
-                      삭제
-                    </button>
-                  </div>
-                ))}
-              </div>
-            </Accordion>
-          ))}
+                      <span className="min-w-0 flex-1 truncate font-semibold text-slate-800">
+                        {r.data.name}
+                      </span>
+                      <input
+                        defaultValue={r.data.team || "미배정"}
+                        onBlur={(e) => {
+                          const v = e.target.value.trim();
+                          if (v && v !== r.data.team) onEditPerson(r, { team: v });
+                        }}
+                        className="w-24 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs outline-none focus:border-brand-500"
+                      />
+                      <button
+                        onClick={() => onRemove(r)}
+                        className="text-xs text-slate-400 hover:text-red-500"
+                      >
+                        삭제
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </Accordion>
+            ))}
         </div>
       </Accordion>
     </div>
@@ -830,7 +869,6 @@ function HolidayPanel({
 }) {
   const [d, setD] = useState("");
   const sorted = [...holidays].sort();
-
   return (
     <Accordion
       title="공휴일 관리"
@@ -884,21 +922,80 @@ function HolidayPanel({
 }
 
 /* ============================ 공용 ============================ */
-function prettyMonthShort(opDates: string[]) {
-  if (opDates.length === 0) return "이번 달";
-  const [y, m] = opDates[0].split("-").map(Number);
-  return `${m}월`;
+function GuestStepper({
+  value,
+  disabled,
+  onChange,
+}: {
+  value: number;
+  disabled?: boolean;
+  onChange: (n: number) => void;
+}) {
+  return (
+    <div className="flex shrink-0 items-center gap-1 rounded-lg bg-amber-50 px-1.5 py-1 ring-1 ring-inset ring-amber-200">
+      <span className="pl-0.5 text-[11px] font-semibold text-amber-700">게스트</span>
+      <button
+        onClick={() => onChange(Math.max(0, value - 1))}
+        disabled={disabled}
+        className="grid h-6 w-6 place-items-center rounded-md bg-white text-sm font-bold text-slate-600 hover:bg-slate-100 disabled:opacity-40"
+      >
+        −
+      </button>
+      <span className="w-5 text-center text-sm font-extrabold tabular-nums text-amber-800">
+        {value}
+      </span>
+      <button
+        onClick={() => onChange(value + 1)}
+        disabled={disabled}
+        className="grid h-6 w-6 place-items-center rounded-md bg-amber-500 text-sm font-bold text-white hover:bg-amber-600 disabled:opacity-40"
+      >
+        +
+      </button>
+    </div>
+  );
 }
+
+function CheckBtn({
+  label,
+  time,
+  tone,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  time?: string;
+  tone: "in" | "out";
+  disabled?: boolean;
+  onClick: () => void;
+}) {
+  const on = !!time;
+  const onCls = tone === "in" ? "bg-emerald-500 text-white" : "bg-sky-500 text-white";
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      className={`min-w-[3.6rem] shrink-0 rounded-lg px-2 py-1.5 text-xs font-bold transition disabled:opacity-40 ${
+        on ? onCls : "bg-slate-100 text-slate-500 hover:bg-slate-200"
+      }`}
+    >
+      {label}
+      {on && <span className="ml-1 font-semibold opacity-90">{time}</span>}
+    </button>
+  );
+}
+
 function Accordion({
   title,
   count,
   badge,
+  right,
   defaultOpen = false,
   children,
 }: {
   title: string;
   count?: string;
   badge?: React.ReactNode;
+  right?: React.ReactNode;
   defaultOpen?: boolean;
   children: React.ReactNode;
 }) {
@@ -915,6 +1012,7 @@ function Accordion({
         {badge}
         <span className="font-bold text-slate-800">{title}</span>
         {count && <span className="text-xs font-normal text-slate-400">{count}</span>}
+        {right && <span className="ml-auto">{right}</span>}
       </button>
       {open && <div className="border-t border-slate-100">{children}</div>}
     </div>
