@@ -156,15 +156,13 @@ export default function AttendancePage() {
   const config = configRow;
   const guestPay = Number(config?.data?.guestPay) || 0;
 
-  /** 오픈 일차별 기본 급여: 개인 설정 > 공통 설정 */
+  /** 오픈 일차별 기본 급여 — 운영진 개인 설정 */
   const rateFor = useCallback(
     (person: Rec, d: string) => {
       const tier = String(Math.min(openIdx[d] ?? 1, RATE_TIERS.length));
-      const personal = person.data.rates?.[tier];
-      if (personal !== undefined && personal !== null && personal !== "") return Number(personal);
-      return Number(config?.data?.opRates?.[tier]) || 0;
+      return Number(person.data.rates?.[tier]) || 0;
     },
-    [openIdx, config]
+    [openIdx]
   );
   /** 그 날짜의 급여(개별 조정 우선) */
   const payFor = useCallback(
@@ -177,17 +175,15 @@ export default function AttendancePage() {
   );
 
   // ---- persistence ----
+  /** 낙관적 저장 — 화면 새로고침 없이 즉시 반영 (실패 시에만 재조회) */
   const savePerson = useCallback(
-    async (row: Rec, patch: Record<string, any>) => {
+    (row: Rec, patch: Record<string, any>) => {
       if (!user) return;
-      setRows((prev) =>
-        prev.map((r) => (r.id === row.id ? { ...r, data: { ...r.data, ...patch } } : r))
-      );
-      await api.upsertRecord(user.token, row.id, "attendance", activeAffiliation, {
-        ...row.data,
-        ...patch,
-      });
-      load();
+      const next = { ...row.data, ...patch };
+      setRows((prev) => prev.map((r) => (r.id === row.id ? { ...r, data: next } : r)));
+      api
+        .upsertRecord(user.token, row.id, "attendance", activeAffiliation, next)
+        .catch(() => load());
     },
     [user, activeAffiliation, load]
   );
@@ -195,7 +191,7 @@ export default function AttendancePage() {
     (row: Rec, d: string, patch: Record<string, any>) => {
       if (!d) return;
       const att = row.data.att ?? {};
-      return savePerson(row, { att: { ...att, [d]: { ...(att[d] ?? {}), ...patch } } });
+      savePerson(row, { att: { ...att, [d]: { ...(att[d] ?? {}), ...patch } } });
     },
     [savePerson]
   );
@@ -217,14 +213,22 @@ export default function AttendancePage() {
   }
   async function saveConfig(patch: Record<string, any>) {
     if (!user) return;
-    await api.upsertRecord(user.token, config?.id ?? null, "attendance", activeAffiliation, {
+    const next = {
       group: "config",
       guestPay: 0,
-      opRates: {},
       holidays: [],
       ...(config?.data ?? {}),
       ...patch,
-    });
+    };
+    if (config) {
+      // 새로고침 없이 즉시 반영
+      setRows((prev) => prev.map((r) => (r.id === config.id ? { ...r, data: next } : r)));
+      api
+        .upsertRecord(user.token, config.id, "attendance", activeAffiliation, next)
+        .catch(() => load());
+      return;
+    }
+    await api.upsertRecord(user.token, null, "attendance", activeAffiliation, next);
     load();
   }
 
@@ -566,6 +570,14 @@ function OperatorView({
         {prettyDay(date)} · 오픈 {openIdx[date] ?? "-"}일차 · <b>출근</b>을 눌러야 급여가 합산됩니다.
         금액은 이 날짜만 개별 조정됩니다.
       </p>
+      <div className="flex items-center gap-2 px-2.5 text-[11px] font-semibold text-slate-400">
+        <span className="min-w-[3.5rem] flex-1">이름</span>
+        <span className="w-[3.6rem] shrink-0 text-center">출근</span>
+        <span className="w-[7.2rem] shrink-0 text-center">게스트</span>
+        <span className="w-16 shrink-0 text-right">게스트페이</span>
+        <span className="w-[6.2rem] shrink-0 text-right">급여</span>
+        <span className="w-[5.5rem] shrink-0 text-right">금액</span>
+      </div>
       {rows.map((r) => {
         const att = attOf(r, date);
         const present = !!att.in;
@@ -573,11 +585,11 @@ function OperatorView({
         return (
           <div
             key={r.id}
-            className={`flex flex-wrap items-center gap-2 rounded-2xl border p-3 transition ${
+            className={`flex items-center gap-2 overflow-x-auto rounded-2xl border p-2.5 transition ${
               present ? "border-emerald-200 bg-emerald-50/40" : "border-slate-200 bg-white"
             }`}
           >
-            <span className="min-w-0 flex-1 truncate font-semibold text-slate-800">
+            <span className="min-w-[3.5rem] flex-1 truncate text-sm font-semibold text-slate-800">
               {r.data.name}
             </span>
             <CheckBtn
@@ -592,22 +604,26 @@ function OperatorView({
               disabled={!date}
               onChange={(n) => onAtt(r, date, { guests: n })}
             />
-            <div className="flex shrink-0 items-center gap-1">
+            <span className="w-16 shrink-0 text-right text-xs font-semibold text-amber-600">
+              {won(guestPay * g)}
+            </span>
+            <div className="flex shrink-0 items-center gap-0.5">
               <input
                 key={`${r.id}-${date}`}
                 defaultValue={payFor(r, date)}
                 type="number"
                 min={0}
                 disabled={!date}
+                title="이 날짜의 급여"
                 onBlur={(e) =>
                   date && onPay(r, date, e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)))
                 }
-                className="w-24 rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-right text-sm outline-none focus:border-brand-500 focus:bg-white disabled:opacity-40"
+                className="w-[5.5rem] rounded-lg border border-slate-200 bg-slate-50 px-2 py-1.5 text-right text-sm outline-none focus:border-brand-500 focus:bg-white disabled:opacity-40"
               />
               <span className="text-xs text-slate-400">원</span>
             </div>
             <span
-              className={`w-24 shrink-0 text-right text-sm font-extrabold ${
+              className={`w-[5.5rem] shrink-0 text-right text-sm font-extrabold ${
                 present || g > 0 ? "text-brand-600" : "text-slate-300"
               }`}
             >
@@ -639,10 +655,6 @@ function ConfigView({
   onEditPerson: (row: Rec, patch: Record<string, any>) => void;
 }) {
   const [guestPay, setGuestPay] = useState(String(Number(config?.data?.guestPay) || 0));
-  const rates = (config?.data?.opRates ?? {}) as Record<string, string | number>;
-  const [rateInputs, setRateInputs] = useState<Record<string, string>>(
-    Object.fromEntries(RATE_TIERS.map((t) => [String(t), String(Number(rates[String(t)]) || 0)]))
-  );
   const [opName, setOpName] = useState("");
   const [salesName, setSalesName] = useState("");
   const [salesTeam, setSalesTeam] = useState("");
@@ -680,43 +692,9 @@ function ConfigView({
           </button>
         </div>
 
-        <div className="mt-5">
-          <p className="mb-1 text-xs font-semibold text-slate-500">
-            운영진 공통 급여 — 오픈 일차별 기본 금액
-          </p>
-          <p className="mb-2 text-xs text-slate-400">
-            아래 ‘운영진 명단’에서 개인별로 다르게 지정할 수 있습니다(개인 설정이 우선).
-          </p>
-          <div className="flex flex-wrap items-end gap-3">
-            {RATE_TIERS.map((t) => (
-              <label key={t} className="block">
-                <span className="mb-1 block text-xs text-slate-500">오픈 {t}일차</span>
-                <div className="flex items-center gap-1">
-                  <input
-                    value={rateInputs[String(t)] ?? "0"}
-                    onChange={(e) => setRateInputs((s) => ({ ...s, [String(t)]: e.target.value }))}
-                    type="number"
-                    min={0}
-                    className="w-28 rounded-lg border border-slate-200 bg-slate-50 px-2 py-2 text-right text-sm outline-none focus:border-brand-500 focus:bg-white"
-                  />
-                  <span className="text-sm text-slate-400">원</span>
-                </div>
-              </label>
-            ))}
-            <button
-              onClick={() => {
-                const opRates: Record<string, number> = {};
-                RATE_TIERS.forEach(
-                  (t) => (opRates[String(t)] = Math.max(0, Number(rateInputs[String(t)]) || 0))
-                );
-                onSaveConfig({ opRates });
-              }}
-              className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
-            >
-              공통 급여 저장
-            </button>
-          </div>
-        </div>
+        <p className="mt-3 text-xs text-slate-400">
+          운영진 급여는 아래 ‘운영진 명단’에서 <b>인원별</b>로 지정합니다.
+        </p>
       </div>
 
       {/* 공휴일 관리 */}
@@ -757,9 +735,7 @@ function ConfigView({
                   삭제
                 </button>
               </div>
-              <p className="mb-1.5 text-xs text-slate-400">
-                개인 급여(비우면 공통 설정 사용)
-              </p>
+              <p className="mb-1.5 text-xs text-slate-400">개인 급여 — 오픈 일차별</p>
               <div className="flex flex-wrap gap-2">
                 {RATE_TIERS.map((t) => (
                   <label key={t} className="block">
@@ -769,7 +745,7 @@ function ConfigView({
                         defaultValue={r.data.rates?.[String(t)] ?? ""}
                         type="number"
                         min={0}
-                        placeholder={String(Number(rates[String(t)]) || 0)}
+                        placeholder="0"
                         onBlur={(e) => {
                           const v = e.target.value;
                           onEditPerson(r, {
