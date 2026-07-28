@@ -52,27 +52,35 @@ const HOLIDAYS = new Set<string>([
   // 2026
   "2026-01-01", "2026-02-16", "2026-02-17", "2026-02-18", "2026-03-01",
   "2026-03-02", "2026-05-05", "2026-05-24", "2026-05-25", "2026-06-06",
-  "2026-08-15", "2026-08-17", "2026-09-24", "2026-09-25", "2026-09-26",
-  "2026-09-28", "2026-10-03", "2026-10-05", "2026-10-09", "2026-12-25",
+  "2026-07-17", "2026-08-15", "2026-08-17", "2026-09-24", "2026-09-25",
+  "2026-09-26", "2026-09-28", "2026-10-03", "2026-10-05", "2026-10-09",
+  "2026-12-25",
   // 2027
   "2027-01-01", "2027-02-06", "2027-02-07", "2027-02-08", "2027-02-09",
-  "2027-03-01", "2027-05-05", "2027-05-13", "2027-06-06", "2027-08-15",
-  "2027-08-16", "2027-09-14", "2027-09-15", "2027-09-16", "2027-10-03",
-  "2027-10-04", "2027-10-09", "2027-10-11", "2027-12-25",
+  "2027-03-01", "2027-05-05", "2027-05-13", "2027-06-06", "2027-07-17",
+  "2027-08-15", "2027-08-16", "2027-09-14", "2027-09-15", "2027-09-16",
+  "2027-10-03", "2027-10-04", "2027-10-09", "2027-10-11", "2027-12-25",
 ]);
 
-/** 영업일: 금·토 + 공휴일 전날 */
-function operatingDates(ym: string): string[] {
+/** 영업일: 금·토 + 공휴일 전날 (+ 사용자가 추가한 공휴일 반영) */
+function operatingDates(ym: string, extra: string[] = []): string[] {
   const [y, m] = ym.split("-").map(Number);
   const dim = new Date(y, m, 0).getDate();
+  const all = new Set([...Array.from(HOLIDAYS), ...extra]);
   const res: string[] = [];
   for (let d = 1; d <= dim; d++) {
     const date = new Date(y, m - 1, d);
     const dow = date.getDay(); // 0 일 … 6 토
     const nextDs = fmt(new Date(y, m - 1, d + 1));
-    if (dow === 5 || dow === 6 || HOLIDAYS.has(nextDs)) res.push(fmt(date));
+    if (dow === 5 || dow === 6 || all.has(nextDs)) res.push(fmt(date));
   }
   return res;
+}
+/** 그 날짜가 '공휴일 전날'이라서 포함됐는지 */
+function isHolidayEve(ds: string, extra: string[] = []) {
+  const [y, m, d] = ds.split("-").map(Number);
+  const next = fmt(new Date(y, m - 1, d + 1));
+  return HOLIDAYS.has(next) || extra.includes(next);
 }
 /** 연속된 영업일 묶음 안에서의 '오픈 N일차' */
 function openIndexMap(dates: string[]): Record<string, number> {
@@ -105,7 +113,16 @@ export default function AttendancePage() {
   const [month, setMonth] = useState(todayMonth());
   const [viewMode, setViewMode] = useState<ViewMode>("day");
 
-  const opDates = useMemo(() => operatingDates(month), [month]);
+  const configRow = useMemo(() => rows.find((r) => r.data.group === "config") || null, [rows]);
+  const customHolidays: string[] = useMemo(
+    () => (configRow?.data?.holidays ?? []) as string[],
+    [configRow]
+  );
+
+  const opDates = useMemo(
+    () => operatingDates(month, customHolidays),
+    [month, customHolidays]
+  );
   const openIdx = useMemo(() => openIndexMap(opDates), [opDates]);
 
   const [date, setDate] = useState<string>("");
@@ -138,7 +155,7 @@ export default function AttendancePage() {
 
   const salesRows = useMemo(() => rows.filter((r) => r.data.group === "sales"), [rows]);
   const opRows = useMemo(() => rows.filter((r) => r.data.group === "operator"), [rows]);
-  const config = useMemo(() => rows.find((r) => r.data.group === "config") || null, [rows]);
+  const config = configRow;
   const guestPay = Number(config?.data?.guestPay) || 0;
   const guests = (config?.data?.guests ?? {}) as Record<string, number>;
 
@@ -181,6 +198,7 @@ export default function AttendancePage() {
       guestPay: 0,
       opRates: {},
       guests: {},
+      holidays: [],
       ...(config?.data ?? {}),
       ...patch,
     });
@@ -268,20 +286,27 @@ export default function AttendancePage() {
                   {opDates.length === 0 && (
                     <span className="text-xs text-slate-400">이 달의 영업일이 없습니다.</span>
                   )}
-                  {opDates.map((d) => (
-                    <button
-                      key={d}
-                      onClick={() => setDate(d)}
-                      className={`shrink-0 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition ${
-                        date === d
-                          ? "border-brand-500 bg-brand-600 text-white"
-                          : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                      }`}
-                    >
-                      {prettyDay(d)}
-                      <span className="ml-1 opacity-70">·{openIdx[d]}일차</span>
-                    </button>
-                  ))}
+                  {opDates.map((d) => {
+                    const eve = isHolidayEve(d, customHolidays);
+                    return (
+                      <button
+                        key={d}
+                        onClick={() => setDate(d)}
+                        title={eve ? "공휴일 전날" : undefined}
+                        className={`shrink-0 rounded-lg border px-2.5 py-1.5 text-xs font-semibold transition ${
+                          date === d
+                            ? "border-brand-500 bg-brand-600 text-white"
+                            : eve
+                            ? "border-rose-200 bg-rose-50 text-rose-600 hover:bg-rose-100"
+                            : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                        }`}
+                      >
+                        {eve && <span className="mr-0.5">🎌</span>}
+                        {prettyDay(d)}
+                        <span className="ml-1 opacity-70">·{openIdx[d]}일차</span>
+                      </button>
+                    );
+                  })}
                 </div>
               )}
             </div>
@@ -685,6 +710,12 @@ function ConfigView({
         </div>
       </div>
 
+      {/* 공휴일 관리 */}
+      <HolidayPanel
+        holidays={(config?.data?.holidays ?? []) as string[]}
+        onSave={(list) => onSaveConfig({ holidays: list })}
+      />
+
       {/* 운영진 명단 */}
       <Accordion title="운영진 명단" badge={<OpBadge />} count={`${opRows.length}명`} defaultOpen>
         <div className="space-y-2 p-3">
@@ -789,6 +820,69 @@ function ConfigView({
   );
 }
 
+/* ---------- 공휴일 관리 ---------- */
+function HolidayPanel({
+  holidays,
+  onSave,
+}: {
+  holidays: string[];
+  onSave: (list: string[]) => void;
+}) {
+  const [d, setD] = useState("");
+  const sorted = [...holidays].sort();
+
+  return (
+    <Accordion
+      title="공휴일 관리"
+      badge={<HolidayBadge />}
+      count={sorted.length ? `추가 ${sorted.length}일` : "기본값 사용"}
+    >
+      <div className="space-y-3 p-4">
+        <p className="text-xs text-slate-400">
+          대한민국 공휴일(대체공휴일 포함)은 기본 내장되어 있습니다. 누락되거나 임시공휴일이 생기면
+          여기에 추가하세요. 추가한 <b>공휴일의 전날</b>이 영업일에 자동으로 포함됩니다.
+        </p>
+        <div className="flex flex-wrap gap-2">
+          <input
+            type="date"
+            value={d}
+            onChange={(e) => setD(e.target.value)}
+            className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm outline-none focus:border-brand-500 focus:bg-white"
+          />
+          <button
+            onClick={() => {
+              if (!d || holidays.includes(d)) return;
+              onSave([...holidays, d].sort());
+              setD("");
+            }}
+            className="rounded-lg bg-brand-600 px-4 py-2 text-sm font-semibold text-white hover:bg-brand-700"
+          >
+            + 공휴일 추가
+          </button>
+        </div>
+        {sorted.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {sorted.map((h) => (
+              <span
+                key={h}
+                className="flex items-center gap-1 rounded-lg bg-rose-50 px-2 py-1 text-xs font-semibold text-rose-600 ring-1 ring-inset ring-rose-200"
+              >
+                🎌 {h}
+                <button
+                  onClick={() => onSave(holidays.filter((x) => x !== h))}
+                  className="text-rose-400 hover:text-rose-600"
+                >
+                  ✕
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+      </div>
+    </Accordion>
+  );
+}
+
 /* ============================ 공용 ============================ */
 function prettyMonthShort(opDates: string[]) {
   if (opDates.length === 0) return "이번 달";
@@ -830,6 +924,13 @@ function TeamBadge() {
   return (
     <span className="rounded-md bg-indigo-100 px-1.5 py-0.5 text-[11px] font-medium text-indigo-700 ring-1 ring-inset ring-indigo-200">
       팀
+    </span>
+  );
+}
+function HolidayBadge() {
+  return (
+    <span className="rounded-md bg-rose-100 px-1.5 py-0.5 text-[11px] font-medium text-rose-700 ring-1 ring-inset ring-rose-200">
+      공휴일
     </span>
   );
 }
