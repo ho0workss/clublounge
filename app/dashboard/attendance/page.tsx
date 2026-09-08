@@ -101,8 +101,30 @@ const RATE_TIERS = [1, 2, 3];
 
 /* ---- 개인 데이터 헬퍼 ---- */
 const attOf = (r: Rec, d: string) => (r.data.att ?? {})[d] ?? {};
-const guestsOf = (r: Rec, d: string) => Number(attOf(r, d).guests) || 0;
 const isPresent = (r: Rec, d: string) => !!attOf(r, d).in;
+
+/* ---- 게스트 시간대 ---- */
+export type Slot = { id: string; label: string; start: string; end: string; pay: number };
+const BASE_SLOT = "__base";
+const slotsOf = (config: Rec | null): Slot[] =>
+  Array.isArray(config?.data?.guestSlots) ? (config!.data.guestSlots as Slot[]) : [];
+/** 시간대별 게스트 수 (레거시 단일 숫자도 흡수) */
+function guestMap(r: Rec, d: string): Record<string, number> {
+  const a = attOf(r, d);
+  if (a.gs && typeof a.gs === "object") return a.gs as Record<string, number>;
+  const n = Number(a.guests) || 0;
+  return n > 0 ? { [BASE_SLOT]: n } : {};
+}
+const guestsOf = (r: Rec, d: string) =>
+  Object.values(guestMap(r, d)).reduce((s, n) => s + (Number(n) || 0), 0);
+/** 시간대별 단가를 적용한 게스트 금액 */
+function guestAmountOf(r: Rec, d: string, slots: Slot[], basePay: number) {
+  return Object.entries(guestMap(r, d)).reduce((s, [id, n]) => {
+    const cnt = Number(n) || 0;
+    const slot = slots.find((x) => x.id === id);
+    return s + cnt * (slot ? Number(slot.pay) || 0 : basePay);
+  }, 0);
+}
 
 export default function AttendancePage() {
   const { user, activeAffiliation } = useAuth();
@@ -155,6 +177,22 @@ export default function AttendancePage() {
   const opRows = useMemo(() => rows.filter((r) => r.data.group === "operator"), [rows]);
   const config = configRow;
   const guestPay = Number(config?.data?.guestPay) || 0;
+  const slots = useMemo(() => slotsOf(config), [config]);
+
+  const [slotId, setSlotId] = useState<string>(BASE_SLOT);
+  useEffect(() => {
+    setSlotId((cur) =>
+      slots.length === 0 ? BASE_SLOT : slots.some((x) => x.id === cur) ? cur : slots[0].id
+    );
+  }, [slots]);
+
+  /** 시간대 단가를 적용한 게스트 금액 */
+  const gAmt = useCallback(
+    (r: Rec, d: string) => guestAmountOf(r, d, slots, guestPay),
+    [slots, guestPay]
+  );
+  /** 현재 선택된 시간대의 게스트 수 */
+  const gCount = useCallback((r: Rec, d: string) => Number(guestMap(r, d)[slotId]) || 0, [slotId]);
 
   /** 오픈 일차별 기본 급여 — 운영진 개인 설정 */
   const rateFor = useCallback(
@@ -196,6 +234,16 @@ export default function AttendancePage() {
     [savePerson]
   );
 
+  /** 선택된 시간대에 게스트 수 기록 */
+  const setGuest = useCallback(
+    (row: Rec, d: string, n: number) =>
+      patchAtt(row, d, {
+        gs: { ...guestMap(row, d), [slotId]: Math.max(0, n) },
+        guests: undefined,
+      }),
+    [patchAtt, slotId]
+  );
+
   async function addPerson(group: "operator" | "sales", name: string, team?: string) {
     if (!user || !name.trim()) return;
     await api.upsertRecord(user.token, null, "attendance", activeAffiliation, {
@@ -235,7 +283,7 @@ export default function AttendancePage() {
   const tabs: { id: Tab; label: string; icon: string; manageOnly?: boolean }[] = [
     { id: "sales", label: "영업진", icon: "💼" },
     { id: "operator", label: "운영진", icon: "🛡️", manageOnly: true },
-    { id: "config", label: "출근인원 설정", icon: "⚙️", manageOnly: true },
+    { id: "config", label: "출근부 설정", icon: "⚙️", manageOnly: true },
   ];
   const visibleTabs = tabs.filter((t) => !t.manageOnly || canManage);
   const activeTab = visibleTabs.some((t) => t.id === tab) ? tab : "sales";
@@ -331,6 +379,29 @@ export default function AttendancePage() {
                   })}
                 </div>
               )}
+
+              {viewMode === "day" && slots.length > 0 && (
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-xs font-semibold text-slate-500">게스트 시간대</span>
+                  {slots.map((sl) => (
+                    <button
+                      key={sl.id}
+                      onClick={() => setSlotId(sl.id)}
+                      className={`rounded-lg border px-2.5 py-1 text-xs font-semibold transition ${
+                        slotId === sl.id
+                          ? "border-amber-500 bg-amber-500 text-white"
+                          : "border-amber-200 bg-amber-50 text-amber-700 hover:bg-amber-100"
+                      }`}
+                    >
+                      {sl.label}
+                      <span className="ml-1 opacity-80">
+                        {sl.start}~{sl.end}
+                      </span>
+                      <span className="ml-1 font-extrabold">{won(sl.pay)}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
           )}
 
@@ -342,8 +413,11 @@ export default function AttendancePage() {
               viewMode={viewMode}
               date={date}
               opDates={opDates}
-              guestPay={guestPay}
+              slots={slots}
+              gAmt={gAmt}
+              gCount={gCount}
               onAtt={patchAtt}
+              onGuest={setGuest}
             />
           ) : activeTab === "operator" ? (
             <OperatorView
@@ -352,9 +426,11 @@ export default function AttendancePage() {
               date={date}
               opDates={opDates}
               openIdx={openIdx}
-              guestPay={guestPay}
+              gAmt={gAmt}
+              gCount={gCount}
               payFor={payFor}
               onAtt={patchAtt}
+              onGuest={setGuest}
               onPay={(row, d, amt) => savePerson(row, { pay: { ...(row.data.pay ?? {}), [d]: amt } })}
             />
           ) : (
@@ -380,15 +456,21 @@ function SalesView({
   viewMode,
   date,
   opDates,
-  guestPay,
+  slots,
+  gAmt,
+  gCount,
   onAtt,
+  onGuest,
 }: {
   rows: Rec[];
   viewMode: ViewMode;
   date: string;
   opDates: string[];
-  guestPay: number;
+  slots: Slot[];
+  gAmt: (r: Rec, d: string) => number;
+  gCount: (r: Rec, d: string) => number;
   onAtt: (row: Rec, date: string, patch: Record<string, any>) => void;
+  onGuest: (row: Rec, date: string, n: number) => void;
 }) {
   const teams = useMemo(() => {
     const t: Record<string, Rec[]> = {};
@@ -399,11 +481,15 @@ function SalesView({
 
   const guestsIn = (r: Rec) =>
     viewMode === "day" ? guestsOf(r, date) : opDates.reduce((s, d) => s + guestsOf(r, d), 0);
+  const amtIn = (r: Rec) =>
+    viewMode === "day" ? gAmt(r, date) : opDates.reduce((s, d) => s + gAmt(r, d), 0);
   const teamGuests = (list: Rec[]) => list.reduce((s, r) => s + guestsIn(r), 0);
+  const teamAmt = (list: Rec[]) => list.reduce((s, r) => s + amtIn(r), 0);
   const totalGuests = teamGuests(rows);
+  const totalAmt = teamAmt(rows);
 
   if (rows.length === 0)
-    return <Empty text="등록된 영업진이 없습니다. ‘출근인원 설정’에서 추가하세요." />;
+    return <Empty text="등록된 영업진이 없습니다. ‘출근부 설정’에서 추가하세요." />;
 
   return (
     <div className="space-y-4">
@@ -412,13 +498,15 @@ function SalesView({
         <div>
           <p className="text-sm font-bold text-slate-700">게스트 합계</p>
           <p className="text-xs text-slate-400">
-            {viewMode === "day" ? prettyDay(date) : prettyMonth(opDates[0]?.slice(0, 7) ?? "")} ·
-            게스트페이 {won(guestPay)}
+            {viewMode === "day" ? prettyDay(date) : prettyMonth(opDates[0]?.slice(0, 7) ?? "")}
+            {slots.length > 0
+              ? ` · 시간대 ${slots.length}개`
+              : ""}
           </p>
         </div>
         <div className="text-right">
           <p className="text-xs text-slate-400">게스트 {totalGuests}명</p>
-          <p className="text-xl font-extrabold text-brand-600">{won(guestPay * totalGuests)}</p>
+          <p className="text-xl font-extrabold text-brand-600">{won(totalAmt)}</p>
         </div>
       </div>
 
@@ -435,7 +523,7 @@ function SalesView({
                 <span className="rounded-md bg-amber-100 px-1.5 py-0.5 font-semibold text-amber-700 ring-1 ring-inset ring-amber-200">
                   게스트 {g}
                 </span>
-                <span className="font-extrabold text-brand-600">{won(guestPay * g)}</span>
+                <span className="font-extrabold text-brand-600">{won(teamAmt(teams[team]))}</span>
               </span>
             }
             defaultOpen
@@ -454,13 +542,14 @@ function SalesView({
                       <span className="text-slate-500">
                         출근 <b className="text-brand-600">{days}</b>/{opDates.length}일 · 게스트{" "}
                         <b className="text-amber-600">{g2}</b>명 ·{" "}
-                        <b className="text-brand-600">{won(guestPay * g2)}</b>
+                        <b className="text-brand-600">
+                          {won(opDates.reduce((s2, d2) => s2 + gAmt(r, d2), 0))}
+                        </b>
                       </span>
                     </div>
                   );
                 }
                 const att = attOf(r, date);
-                const g2 = guestsOf(r, date);
                 return (
                   <div key={r.id} className="flex flex-wrap items-center gap-2 px-2 py-2">
                     <span className="min-w-0 flex-1 truncate font-semibold text-slate-800">
@@ -483,12 +572,12 @@ function SalesView({
                       />
                     </div>
                     <GuestStepper
-                      value={g2}
+                      value={gCount(r, date)}
                       disabled={!date}
-                      onChange={(n) => onAtt(r, date, { guests: n })}
+                      onChange={(n) => onGuest(r, date, n)}
                     />
                     <span className="w-20 shrink-0 text-right text-sm font-bold text-brand-600">
-                      {won(guestPay * g2)}
+                      {won(gAmt(r, date))}
                     </span>
                   </div>
                 );
@@ -508,9 +597,11 @@ function OperatorView({
   date,
   opDates,
   openIdx,
-  guestPay,
+  gAmt,
+  gCount,
   payFor,
   onAtt,
+  onGuest,
   onPay,
 }: {
   rows: Rec[];
@@ -518,17 +609,18 @@ function OperatorView({
   date: string;
   opDates: string[];
   openIdx: Record<string, number>;
-  guestPay: number;
+  gAmt: (r: Rec, d: string) => number;
+  gCount: (r: Rec, d: string) => number;
   payFor: (r: Rec, d: string) => number;
   onAtt: (row: Rec, date: string, patch: Record<string, any>) => void;
+  onGuest: (row: Rec, date: string, n: number) => void;
   onPay: (row: Rec, date: string, amount: number) => void;
 }) {
   if (rows.length === 0)
-    return <Empty text="등록된 운영진이 없습니다. ‘출근인원 설정’에서 추가하세요." />;
+    return <Empty text="등록된 운영진이 없습니다. ‘출근부 설정’에서 추가하세요." />;
 
   /** 출근한 날만 급여 인정 + 게스트 금액 */
-  const earned = (r: Rec, d: string) =>
-    (isPresent(r, d) ? payFor(r, d) : 0) + guestPay * guestsOf(r, d);
+  const earned = (r: Rec, d: string) => (isPresent(r, d) ? payFor(r, d) : 0) + gAmt(r, d);
 
   if (viewMode === "month") {
     return (
@@ -600,12 +692,12 @@ function OperatorView({
               onClick={() => onAtt(r, date, { in: att.in ? undefined : nowKST() })}
             />
             <GuestStepper
-              value={g}
+              value={gCount(r, date)}
               disabled={!date}
-              onChange={(n) => onAtt(r, date, { guests: n })}
+              onChange={(n) => onGuest(r, date, n)}
             />
             <span className="w-16 shrink-0 text-right text-xs font-semibold text-amber-600">
-              {won(guestPay * g)}
+              {won(gAmt(r, date))}
             </span>
             <div className="flex shrink-0 items-center gap-0.5">
               <input
@@ -636,7 +728,7 @@ function OperatorView({
   );
 }
 
-/* ============================ 출근인원 설정 ============================ */
+/* ============================ 출근부 설정 ============================ */
 function ConfigView({
   config,
   opRows,
@@ -655,6 +747,9 @@ function ConfigView({
   onEditPerson: (row: Rec, patch: Record<string, any>) => void;
 }) {
   const [guestPay, setGuestPay] = useState(String(Number(config?.data?.guestPay) || 0));
+  const slots = slotsOf(config);
+  const saveSlot = (i: number, patch: Partial<Slot>) =>
+    onSaveConfig({ guestSlots: slots.map((s, k) => (k === i ? { ...s, ...patch } : s)) });
   const [opName, setOpName] = useState("");
   const [salesName, setSalesName] = useState("");
   const [salesTeam, setSalesTeam] = useState("");
@@ -667,9 +762,9 @@ function ConfigView({
 
   return (
     <div className="space-y-4">
-      {/* 금액 설정 */}
+      {/* 게스트페이 설정 */}
       <div className="rounded-2xl border border-slate-200 bg-white p-5">
-        <h3 className="mb-3 text-sm font-bold text-slate-700">금액 설정</h3>
+        <h3 className="mb-3 text-sm font-bold text-slate-700">게스트페이 설정</h3>
         <div className="flex flex-wrap items-end gap-4">
           <label className="block">
             <span className="mb-1 block text-xs font-semibold text-slate-500">게스트페이(1명당)</span>
@@ -692,7 +787,89 @@ function ConfigView({
           </button>
         </div>
 
-        <p className="mt-3 text-xs text-slate-400">
+        <p className="mt-2 text-xs text-slate-400">
+          시간대를 추가하지 않으면 위 기본 게스트페이가 모든 게스트에 적용됩니다.
+        </p>
+
+        {/* 시간대별 게스트페이 */}
+        <div className="mt-5">
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <p className="text-xs font-semibold text-slate-500">시간대별 게스트페이</p>
+            <button
+              onClick={() =>
+                onSaveConfig({
+                  guestSlots: [
+                    ...slots,
+                    {
+                      id: `s${Date.now()}`,
+                      label: `${slots.length + 1}부`,
+                      start: "20:00",
+                      end: "22:00",
+                      pay: 0,
+                    },
+                  ],
+                })
+              }
+              className="rounded-lg bg-amber-500 px-3 py-1.5 text-xs font-semibold text-white hover:bg-amber-600"
+            >
+              + 시간대 추가
+            </button>
+          </div>
+          {slots.length === 0 ? (
+            <p className="rounded-lg border border-dashed border-slate-200 p-3 text-center text-xs text-slate-400">
+              등록된 시간대가 없습니다.
+            </p>
+          ) : (
+            <div className="space-y-2">
+              {slots.map((sl, i) => (
+                <div
+                  key={sl.id}
+                  className="flex flex-wrap items-center gap-2 rounded-xl border border-amber-200 bg-amber-50/50 px-3 py-2"
+                >
+                  <input
+                    defaultValue={sl.label}
+                    onBlur={(e) => saveSlot(i, { label: e.target.value.trim() || sl.label })}
+                    placeholder="이름"
+                    className="w-24 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm outline-none focus:border-brand-500"
+                  />
+                  <input
+                    type="time"
+                    defaultValue={sl.start}
+                    onBlur={(e) => saveSlot(i, { start: e.target.value })}
+                    className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm outline-none focus:border-brand-500"
+                  />
+                  <span className="text-xs text-slate-400">~</span>
+                  <input
+                    type="time"
+                    defaultValue={sl.end}
+                    onBlur={(e) => saveSlot(i, { end: e.target.value })}
+                    className="rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-sm outline-none focus:border-brand-500"
+                  />
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="number"
+                      min={0}
+                      defaultValue={sl.pay}
+                      onBlur={(e) =>
+                        saveSlot(i, { pay: Math.max(0, Number(e.target.value) || 0) })
+                      }
+                      className="w-28 rounded-lg border border-slate-200 bg-white px-2 py-1.5 text-right text-sm outline-none focus:border-brand-500"
+                    />
+                    <span className="text-xs text-slate-400">원</span>
+                  </div>
+                  <button
+                    onClick={() => onSaveConfig({ guestSlots: slots.filter((_, k) => k !== i) })}
+                    className="ml-auto text-xs text-slate-400 hover:text-red-500"
+                  >
+                    삭제
+                  </button>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <p className="mt-4 text-xs text-slate-400">
           운영진 급여는 아래 ‘운영진 명단’에서 <b>인원별</b>로 지정합니다.
         </p>
       </div>
