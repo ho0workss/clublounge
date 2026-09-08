@@ -1,0 +1,49 @@
+name: Deploy to Vercel (Production)
+
+# 푸시 자동 배포: 아래 브랜치에 푸시되면 Vercel 프로덕션으로 자동 배포합니다.
+# 활성화하려면 저장소 Settings → Secrets and variables → Actions 에 3개를 등록하세요:
+#   VERCEL_TOKEN      : https://vercel.com/account/tokens 에서 발급
+#   VERCEL_ORG_ID     : 팀 ID (team_...) — 프로젝트의 Settings 또는 `vercel link` 후 .vercel/project.json
+#   VERCEL_PROJECT_ID : 배포할 Vercel 프로젝트 ID (prj_...) — 기존 프로젝트를 넣으면 그 프로젝트가 갱신됨
+# 비밀값이 없으면 워크플로는 조용히 건너뜁니다(실패로 표시되지 않음).
+
+on:
+  push:
+    branches:
+      - claude/webpage-github-vercel-supabase-bhdskz
+      - main
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    env:
+      VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+      VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+      VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+    steps:
+      - name: Check secrets
+        id: guard
+        run: |
+          if [ -z "$VERCEL_TOKEN" ] || [ -z "$VERCEL_ORG_ID" ] || [ -z "$VERCEL_PROJECT_ID" ]; then
+            echo "::notice::Vercel secrets not configured — skipping auto-deploy. Add VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID to enable."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Checkout
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        if: steps.guard.outputs.skip != 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Deploy to Vercel
+        if: steps.guard.outputs.skip != 'true'
+        run: |
+          npm install --global vercel@latest
+          vercel pull --yes --environment=production --token="$VERCEL_TOKEN"
+          vercel build --prod --token="$VERCEL_TOKEN"
+          vercel deploy --prebuilt --prod --token="$VERCEL_TOKEN"
