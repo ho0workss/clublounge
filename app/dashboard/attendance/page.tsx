@@ -115,6 +115,42 @@ function guestMap(r: Rec, d: string): Record<string, number> {
   const n = Number(a.guests) || 0;
   return n > 0 ? { [BASE_SLOT]: n } : {};
 }
+const ALL_SLOT = "__all";
+/** "HH:MM" -> 분 */
+function hhmmToMin(t?: string): number | null {
+  if (!t) return null;
+  const [h, m] = t.split(":").map(Number);
+  if (isNaN(h)) return null;
+  return h * 60 + (m || 0);
+}
+/** 현재 KST 시각(분) */
+function nowMinKST(): number {
+  const p = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Seoul",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date());
+  return hhmmToMin(p) ?? 0;
+}
+/** 자정을 넘는 구간도 처리 */
+function slotContains(sl: Slot, mins: number) {
+  const s = hhmmToMin(sl.start);
+  const e = hhmmToMin(sl.end);
+  if (s === null || e === null) return false;
+  return e > s ? mins >= s && mins < e : mins >= s || mins < e;
+}
+/** 지금 시각에 해당하는 시간대 (없으면 첫 시간대) */
+function autoSlotId(slots: Slot[], mins: number): string {
+  if (slots.length === 0) return BASE_SLOT;
+  return (slots.find((sl) => slotContains(sl, mins)) ?? slots[0]).id;
+}
+const slotLabelOf = (slots: Slot[], id: string) =>
+  id === BASE_SLOT ? "기본" : slots.find((x) => x.id === id)?.label ?? "기타";
+
+export type LogEntry = { t: string; a: "in" | "in-" | "out" | "out-" | "g+" | "g-"; s?: string };
+const logOf = (r: Rec, d: string): LogEntry[] => (attOf(r, d).log ?? []) as LogEntry[];
+
 const guestsOf = (r: Rec, d: string) =>
   Object.values(guestMap(r, d)).reduce((s, n) => s + (Number(n) || 0), 0);
 /** 시간대별 단가를 적용한 게스트 금액 */
@@ -179,10 +215,15 @@ export default function AttendancePage() {
   const guestPay = Number(config?.data?.guestPay) || 0;
   const slots = useMemo(() => slotsOf(config), [config]);
 
-  const [slotId, setSlotId] = useState<string>(BASE_SLOT);
+  // 기본은 '전체' — +/- 를 누르면 현재 시각의 시간대로 자동 기록
+  const [slotId, setSlotId] = useState<string>(ALL_SLOT);
   useEffect(() => {
     setSlotId((cur) =>
-      slots.length === 0 ? BASE_SLOT : slots.some((x) => x.id === cur) ? cur : slots[0].id
+      slots.length === 0
+        ? BASE_SLOT
+        : cur === ALL_SLOT || slots.some((x) => x.id === cur)
+        ? cur
+        : ALL_SLOT
     );
   }, [slots]);
 
@@ -192,7 +233,11 @@ export default function AttendancePage() {
     [slots, guestPay]
   );
   /** 현재 선택된 시간대의 게스트 수 */
-  const gCount = useCallback((r: Rec, d: string) => Number(guestMap(r, d)[slotId]) || 0, [slotId]);
+  const gCount = useCallback(
+    (r: Rec, d: string) =>
+      slotId === ALL_SLOT ? guestsOf(r, d) : Number(guestMap(r, d)[slotId]) || 0,
+    [slotId]
+  );
 
   /** 오픈 일차별 기본 급여 — 운영진 개인 설정 */
   const rateFor = useCallback(
@@ -225,23 +270,63 @@ export default function AttendancePage() {
     },
     [user, activeAffiliation, load]
   );
-  const patchAtt = useCallback(
-    (row: Rec, d: string, patch: Record<string, any>) => {
+  /** att 갱신 + 버튼 누른 시각 기록 */
+  const pushAtt = useCallback(
+    (row: Rec, d: string, patch: Record<string, any>, log?: LogEntry) => {
       if (!d) return;
       const att = row.data.att ?? {};
-      savePerson(row, { att: { ...att, [d]: { ...(att[d] ?? {}), ...patch } } });
+      const cur = att[d] ?? {};
+      const nextCur: Record<string, any> = { ...cur, ...patch };
+      if (log) nextCur.log = [...(cur.log ?? []), log].slice(-300);
+      savePerson(row, { att: { ...att, [d]: nextCur } });
     },
     [savePerson]
   );
 
-  /** 선택된 시간대에 게스트 수 기록 */
-  const setGuest = useCallback(
-    (row: Rec, d: string, n: number) =>
-      patchAtt(row, d, {
-        gs: { ...guestMap(row, d), [slotId]: Math.max(0, n) },
-        guests: undefined,
-      }),
-    [patchAtt, slotId]
+  /** 출근/퇴근 토글 (시각 기록) */
+  const onCheck = useCallback(
+    (row: Rec, d: string, kind: "in" | "out") => {
+      const cur = attOf(row, d);
+      const had = !!cur[kind];
+      pushAtt(row, d, { [kind]: had ? undefined : nowKST() }, {
+        t: nowKST(),
+        a: (had ? `${kind}-` : kind) as LogEntry["a"],
+      });
+    },
+    [pushAtt]
+  );
+
+  /**
+   * 게스트 증감.
+   * '전체'가 선택돼 있으면 누른 시각의 시간대로 자동 기록하고,
+   * 특정 시간대가 선택돼 있으면 그 시간대에 직접 기록한다(누락분 보정).
+   */
+  const onGuest = useCallback(
+    (row: Rec, d: string, n: number) => {
+      if (!d) return;
+      const map = guestMap(row, d);
+      const isAll = slotId === ALL_SLOT;
+      const before = isAll
+        ? Object.values(map).reduce((a, b) => a + (Number(b) || 0), 0)
+        : Number(map[slotId]) || 0;
+      const delta = n - before;
+      if (delta === 0) return;
+
+      let target = isAll ? autoSlotId(slots, nowMinKST()) : slotId;
+      // 전체에서 차감할 때 현재 시간대가 비어 있으면, 값이 있는 마지막 시간대에서 뺀다
+      if (isAll && delta < 0 && !(Number(map[target]) > 0)) {
+        const withCount = Object.keys(map).filter((k) => Number(map[k]) > 0);
+        if (withCount.length > 0) target = withCount[withCount.length - 1];
+      }
+      const nextCount = Math.max(0, (Number(map[target]) || 0) + delta);
+      pushAtt(
+        row,
+        d,
+        { gs: { ...map, [target]: nextCount }, guests: undefined },
+        { t: nowKST(), a: delta > 0 ? "g+" : "g-", s: target }
+      );
+    },
+    [pushAtt, slotId, slots]
   );
 
   async function addPerson(group: "operator" | "sales", name: string, team?: string) {
@@ -383,6 +468,17 @@ export default function AttendancePage() {
               {viewMode === "day" && slots.length > 0 && (
                 <div className="flex flex-wrap items-center gap-1.5">
                   <span className="text-xs font-semibold text-slate-500">게스트 시간대</span>
+                  <button
+                    onClick={() => setSlotId(ALL_SLOT)}
+                    className={`rounded-lg border px-2.5 py-1 text-xs font-semibold transition ${
+                      slotId === ALL_SLOT
+                        ? "border-brand-500 bg-brand-600 text-white"
+                        : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                    }`}
+                  >
+                    전체
+                    <span className="ml-1 opacity-80">자동</span>
+                  </button>
                   {slots.map((sl) => (
                     <button
                       key={sl.id}
@@ -400,6 +496,11 @@ export default function AttendancePage() {
                       <span className="ml-1 font-extrabold">{won(sl.pay)}</span>
                     </button>
                   ))}
+                  <span className="text-[11px] text-slate-400">
+                    {slotId === ALL_SLOT
+                      ? "· 전체 보기 — +/− 를 누르면 누른 시각의 시간대로 자동 기록됩니다"
+                      : "· 이 시간대에 직접 기록합니다(누락분 보정)"}
+                  </span>
                 </div>
               )}
             </div>
@@ -416,8 +517,9 @@ export default function AttendancePage() {
               slots={slots}
               gAmt={gAmt}
               gCount={gCount}
-              onAtt={patchAtt}
-              onGuest={setGuest}
+              slotId={slotId}
+              onCheck={onCheck}
+              onGuest={onGuest}
             />
           ) : activeTab === "operator" ? (
             <OperatorView
@@ -426,11 +528,13 @@ export default function AttendancePage() {
               date={date}
               opDates={opDates}
               openIdx={openIdx}
+              slots={slots}
               gAmt={gAmt}
               gCount={gCount}
+              slotId={slotId}
               payFor={payFor}
-              onAtt={patchAtt}
-              onGuest={setGuest}
+              onCheck={onCheck}
+              onGuest={onGuest}
               onPay={(row, d, amt) => savePerson(row, { pay: { ...(row.data.pay ?? {}), [d]: amt } })}
             />
           ) : (
@@ -459,7 +563,8 @@ function SalesView({
   slots,
   gAmt,
   gCount,
-  onAtt,
+  slotId,
+  onCheck,
   onGuest,
 }: {
   rows: Rec[];
@@ -469,9 +574,11 @@ function SalesView({
   slots: Slot[];
   gAmt: (r: Rec, d: string) => number;
   gCount: (r: Rec, d: string) => number;
-  onAtt: (row: Rec, date: string, patch: Record<string, any>) => void;
+  slotId: string;
+  onCheck: (row: Rec, date: string, kind: "in" | "out") => void;
   onGuest: (row: Rec, date: string, n: number) => void;
 }) {
+  const [openLog, setOpenLog] = useState<string | null>(null);
   const teams = useMemo(() => {
     const t: Record<string, Rec[]> = {};
     rows.forEach((r) => ((t[r.data.team || "미배정"] ??= []).push(r)));
@@ -551,24 +658,32 @@ function SalesView({
                 }
                 const att = attOf(r, date);
                 return (
-                  <div key={r.id} className="flex flex-wrap items-center gap-2 px-2 py-2">
-                    <span className="min-w-0 flex-1 truncate font-semibold text-slate-800">
+                  <div key={r.id}>
+                  <div className="flex flex-wrap items-center gap-2 px-2 py-2">
+                    <button
+                      onClick={() => setOpenLog((v) => (v === r.id ? null : r.id))}
+                      title="클릭하면 버튼 누른 시각 기록이 보입니다"
+                      className="min-w-0 flex-1 truncate text-left font-semibold text-slate-800 hover:text-brand-600"
+                    >
                       {r.data.name}
-                    </span>
+                      <span className="ml-1 text-[11px] font-normal text-slate-400">
+                        {openLog === r.id ? "▾" : "▸"} 기록
+                      </span>
+                    </button>
                     <div className="flex shrink-0 gap-1.5">
                       <CheckBtn
                         label="출근"
                         time={att.in}
                         tone="in"
                         disabled={!date}
-                        onClick={() => onAtt(r, date, { in: att.in ? undefined : nowKST() })}
+                        onClick={() => onCheck(r, date, "in")}
                       />
                       <CheckBtn
                         label="퇴근"
                         time={att.out}
                         tone="out"
                         disabled={!date}
-                        onClick={() => onAtt(r, date, { out: att.out ? undefined : nowKST() })}
+                        onClick={() => onCheck(r, date, "out")}
                       />
                     </div>
                     <GuestStepper
@@ -579,6 +694,8 @@ function SalesView({
                     <span className="w-20 shrink-0 text-right text-sm font-bold text-brand-600">
                       {won(gAmt(r, date))}
                     </span>
+                  </div>
+                  {openLog === r.id && <LogPanel entries={logOf(r, date)} slots={slots} />}
                   </div>
                 );
               })}
@@ -597,10 +714,12 @@ function OperatorView({
   date,
   opDates,
   openIdx,
+  slots,
   gAmt,
   gCount,
+  slotId,
   payFor,
-  onAtt,
+  onCheck,
   onGuest,
   onPay,
 }: {
@@ -609,13 +728,16 @@ function OperatorView({
   date: string;
   opDates: string[];
   openIdx: Record<string, number>;
+  slots: Slot[];
   gAmt: (r: Rec, d: string) => number;
   gCount: (r: Rec, d: string) => number;
+  slotId: string;
   payFor: (r: Rec, d: string) => number;
-  onAtt: (row: Rec, date: string, patch: Record<string, any>) => void;
+  onCheck: (row: Rec, date: string, kind: "in" | "out") => void;
   onGuest: (row: Rec, date: string, n: number) => void;
   onPay: (row: Rec, date: string, amount: number) => void;
 }) {
+  const [openLog, setOpenLog] = useState<string | null>(null);
   if (rows.length === 0)
     return <Empty text="등록된 운영진이 없습니다. ‘출근부 설정’에서 추가하세요." />;
 
@@ -675,21 +797,28 @@ function OperatorView({
         const present = !!att.in;
         const g = guestsOf(r, date);
         return (
+          <div key={r.id}>
           <div
-            key={r.id}
             className={`flex items-center gap-2 overflow-x-auto rounded-2xl border p-2.5 transition ${
               present ? "border-emerald-200 bg-emerald-50/40" : "border-slate-200 bg-white"
             }`}
           >
-            <span className="min-w-[3.5rem] flex-1 truncate text-sm font-semibold text-slate-800">
+            <button
+              onClick={() => setOpenLog((v) => (v === r.id ? null : r.id))}
+              title="클릭하면 버튼 누른 시각 기록이 보입니다"
+              className="min-w-[3.5rem] flex-1 truncate text-left text-sm font-semibold text-slate-800 hover:text-brand-600"
+            >
               {r.data.name}
-            </span>
+              <span className="ml-1 text-[11px] font-normal text-slate-400">
+                {openLog === r.id ? "▾" : "▸"} 기록
+              </span>
+            </button>
             <CheckBtn
               label="출근"
               time={att.in}
               tone="in"
               disabled={!date}
-              onClick={() => onAtt(r, date, { in: att.in ? undefined : nowKST() })}
+              onClick={() => onCheck(r, date, "in")}
             />
             <GuestStepper
               value={gCount(r, date)}
@@ -721,6 +850,8 @@ function OperatorView({
             >
               {won(earned(r, date))}
             </span>
+          </div>
+          {openLog === r.id && <LogPanel entries={logOf(r, date)} slots={slots} />}
           </div>
         );
       })}
@@ -1071,6 +1202,49 @@ function HolidayPanel({
         )}
       </div>
     </Accordion>
+  );
+}
+
+/* ---------- 버튼 누른 시각 기록 ---------- */
+const LOG_LABEL: Record<string, string> = {
+  in: "출근",
+  "in-": "출근 취소",
+  out: "퇴근",
+  "out-": "퇴근 취소",
+  "g+": "게스트 +1",
+  "g-": "게스트 −1",
+};
+function LogPanel({ entries, slots }: { entries: LogEntry[]; slots: Slot[] }) {
+  if (entries.length === 0)
+    return (
+      <p className="mx-2 mb-2 rounded-lg bg-slate-50 px-3 py-2 text-xs text-slate-400">
+        기록이 없습니다.
+      </p>
+    );
+  return (
+    <div className="mx-2 mb-2 space-y-1 rounded-lg bg-slate-50 px-3 py-2">
+      {[...entries].reverse().map((e, i) => (
+        <div key={i} className="flex items-center gap-2 text-xs">
+          <span className="w-12 shrink-0 font-bold tabular-nums text-slate-700">{e.t}</span>
+          <span
+            className={`rounded px-1.5 py-0.5 font-semibold ${
+              e.a === "in"
+                ? "bg-emerald-100 text-emerald-700"
+                : e.a === "out"
+                ? "bg-sky-100 text-sky-700"
+                : e.a === "g+"
+                ? "bg-amber-100 text-amber-700"
+                : e.a === "g-"
+                ? "bg-orange-100 text-orange-700"
+                : "bg-slate-200 text-slate-600"
+            }`}
+          >
+            {LOG_LABEL[e.a] ?? e.a}
+          </span>
+          {e.s && <span className="text-slate-400">{slotLabelOf(slots, e.s)}</span>}
+        </div>
+      ))}
+    </div>
   );
 }
 
