@@ -18,6 +18,7 @@ export default function AuthPage() {
   const [newAff, setNewAff] = useState("");
   const [affiliations, setAffiliations] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -31,16 +32,28 @@ export default function AuthPage() {
   async function submit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    setNotice(null);
     setBusy(true);
     try {
       if (mode === "login") {
         await login(username.trim(), password);
+        router.replace("/dashboard");
       } else {
         const aff = affiliation === "__new__" ? newAff.trim() : affiliation.trim();
         if (!aff) throw new Error("소속을 선택하거나 입력해 주세요.");
-        await signup(username.trim(), password, aff);
+        const res = await signup(username.trim(), password, aff);
+        if (res.pending) {
+          setMode("login");
+          setPassword("");
+          setAffiliation("");
+          setNewAff("");
+          setNotice(
+            `'${res.affiliation}' 소속은 마스터 승인 후 이용할 수 있습니다. 승인되면 로그인해 주세요.`
+          );
+        } else {
+          router.replace("/dashboard");
+        }
       }
-      router.replace("/dashboard");
     } catch (err: any) {
       setError(err.message ?? "오류가 발생했습니다.");
     } finally {
@@ -140,6 +153,18 @@ export default function AuthPage() {
                   />
                 )}
               </Field>
+            )}
+
+            {mode === "signup" && affiliation === "__new__" && (
+              <p className="rounded-lg bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                새 소속은 마스터 승인 후 활성화됩니다. 승인 전에는 로그인할 수 없습니다.
+              </p>
+            )}
+
+            {notice && (
+              <div className="rounded-lg bg-emerald-50 text-emerald-700 text-sm px-3 py-2">
+                {notice}
+              </div>
             )}
 
             {error && (
