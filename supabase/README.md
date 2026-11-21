@@ -7,6 +7,7 @@ Apply in order against a fresh Supabase project:
 3. `03_records.sql`  — logout + generic `cl_records` CRUD + branding + affiliation rename
 4. `04_admin.sql`    — master affiliation approval & member management
 5. `05_grants.sql`   — grant EXECUTE on `cl_*` to `anon`, lock down `_cl_*`
+6. `06_storage.sql`  — the `cl-images` bucket (public read, upload-only write)
 
 Then seed the master account (choose your own password):
 
@@ -29,3 +30,8 @@ insert into cl_users(username, password_hash, role, affiliation, active)
   bridge used to apply these stalls on literal destructive statements.
 - Client connection values live in `lib/supabase.ts` (fallbacks) and in
   `NEXT_PUBLIC_SUPABASE_URL` / `NEXT_PUBLIC_SUPABASE_ANON_KEY`.
+- Images go to the `cl-images` bucket and records keep only the URL. Older
+  rows may still hold inline `data:` URLs; both render from the same
+  `<img src>`, so no data migration is required. `uploadStoredImage()` in
+  `lib/image.ts` falls back to an inline data URL whenever the upload is
+  refused, so the app works even before `06_storage.sql` is applied.

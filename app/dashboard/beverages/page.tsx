@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { api, Rec } from "@/lib/api";
 import { canEditLiquorConfig, canEditSupplies } from "@/lib/roles";
-import { fileToStoredImage, IMAGE_MAX_PX } from "@/lib/image";
+import { uploadStoredImage, IMAGE_MAX_PX } from "@/lib/image";
 
 type Tab = "board" | "supply" | "config" | "inventory";
 
@@ -526,7 +526,7 @@ function LiquorConfig({
               className="hidden"
               onChange={async (e) => {
                 const f = e.target.files?.[0];
-                if (f) setLimg(await fileToStoredImage(f, IMAGE_MAX_PX.liquor));
+                if (f) setLimg(await uploadStoredImage(f, IMAGE_MAX_PX.liquor, "liquor"));
               }}
             />
             <span className="text-xs text-slate-500">{limg ? "사진 변경" : "사진 추가"}</span>
@@ -565,7 +565,7 @@ function LiquorConfig({
                   className="hidden"
                   onChange={async (e) => {
                     const f = e.target.files?.[0];
-                    if (f) saveLiquor(l, { image: await fileToStoredImage(f, IMAGE_MAX_PX.liquor) });
+                    if (f) saveLiquor(l, { image: await uploadStoredImage(f, IMAGE_MAX_PX.liquor, "liquor") });
                   }}
                 />
               </label>

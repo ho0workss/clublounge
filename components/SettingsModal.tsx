@@ -13,7 +13,7 @@ import {
   canEditBranding,
   canManageMembers,
 } from "@/lib/roles";
-import { loadImageFile, shrinkToDataUrl, IMAGE_MAX_PX } from "@/lib/image";
+import { loadImageFile, uploadStoredImage, IMAGE_MAX_PX } from "@/lib/image";
 
 const MIN_PX = 300;
 const MAX_PX = 1000;
@@ -154,6 +154,7 @@ function AffiliationTab() {
   const [newName, setNewName] = useState(activeAffiliation ?? "");
   const [displayName, setDisplayName] = useState("");
   const [logo, setLogo] = useState<string | null>(null);
+  const [logoBusy, setLogoBusy] = useState(false);
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
   const [busy, setBusy] = useState(false);
   const fileRef = useRef<HTMLInputElement>(null);
@@ -171,7 +172,7 @@ function AffiliationTab() {
       return;
     }
     loadImageFile(file)
-      .then((img) => {
+      .then(async (img) => {
         if (img.width < MIN_PX || img.height < MIN_PX || img.width > MAX_PX || img.height > MAX_PX) {
           setMsg({
             ok: false,
@@ -179,9 +180,14 @@ function AffiliationTab() {
           });
           return;
         }
-        // Store a downscaled copy: the logo is refetched on every branding
-        // load, so the original file would cost far more than it is worth.
-        setLogo(shrinkToDataUrl(img, IMAGE_MAX_PX.logo));
+        // Upload a downscaled copy and keep only its URL: the logo is
+        // refetched with the branding row on every dashboard load.
+        setLogoBusy(true);
+        try {
+          setLogo(await uploadStoredImage(file, IMAGE_MAX_PX.logo, "logo"));
+        } finally {
+          setLogoBusy(false);
+        }
       })
       .catch((e) => setMsg({ ok: false, text: e?.message ?? "이미지를 읽을 수 없습니다." }));
   }, []);
@@ -242,7 +248,9 @@ function AffiliationTab() {
         <label className="block text-sm font-semibold text-slate-700">로고 · 이름</label>
         <div className="flex items-center gap-4">
           <div className="grid h-20 w-20 shrink-0 place-items-center overflow-hidden rounded-xl border border-slate-200 bg-slate-50">
-            {logo ? (
+            {logoBusy ? (
+              <span className="text-xs text-slate-400">올리는 중…</span>
+            ) : logo ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={logo} alt="logo" className="h-full w-full object-contain" />
             ) : (
@@ -250,8 +258,8 @@ function AffiliationTab() {
             )}
           </div>
           <div className="flex flex-col gap-2">
-            <button onClick={() => fileRef.current?.click()}
-              className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50">
+            <button onClick={() => fileRef.current?.click()} disabled={logoBusy}
+              className="rounded-lg border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50">
               이미지 선택 ({MIN_PX}~{MAX_PX}px)
             </button>
             {logo && (

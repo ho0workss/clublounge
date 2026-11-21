@@ -65,3 +65,68 @@ export async function fileToStoredImage(
 ): Promise<string> {
   return shrinkToDataUrl(await loadImageFile(file), max, quality);
 }
+
+/* ------------------------------------------------------------------ *
+ * Storage-backed uploads
+ *
+ * Inline data URLs are what pushed the previous project past its
+ * db-size / egress quotas: the bytes live in `cl_records.data` and get
+ * re-sent on every list fetch. Uploading to the `cl-images` bucket
+ * instead means the row carries only a short CDN URL, and the picture is
+ * served once and cached by the browser.
+ *
+ * The bucket is public-read with upload-only write, so a replaced photo
+ * leaves its old object behind rather than letting the browser key delete
+ * arbitrary files. Orphans are cheap at this scale.
+ * ------------------------------------------------------------------ */
+
+import { supabase } from "./supabase";
+
+export const IMAGE_BUCKET = "cl-images";
+
+function dataUrlToBlob(dataUrl: string): Blob {
+  const [head, b64] = dataUrl.split(",");
+  const mime = /:(.*?);/.exec(head)?.[1] ?? "image/webp";
+  const bin = atob(b64);
+  const buf = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+  return new Blob([buf], { type: mime });
+}
+
+const EXT: Record<string, string> = {
+  "image/webp": "webp",
+  "image/jpeg": "jpg",
+  "image/png": "png",
+};
+
+/**
+ * Downscale `file`, upload it, and return a URL safe to put in a record.
+ *
+ * Falls back to the (still downscaled) inline data URL if the upload does
+ * not go through — a missing bucket, a storage policy that rejects the
+ * insert, or no network. Callers get a usable value either way, so this is
+ * safe to ship before the bucket exists.
+ */
+export async function uploadStoredImage(
+  file: File,
+  max: number,
+  folder: string,
+  quality = 0.7
+): Promise<string> {
+  const dataUrl = await fileToStoredImage(file, max, quality);
+  try {
+    const blob = dataUrlToBlob(dataUrl);
+    const ext = EXT[blob.type] ?? "webp";
+    const name = `${folder}/${crypto.randomUUID()}.${ext}`;
+    const { error } = await supabase.storage
+      .from(IMAGE_BUCKET)
+      .upload(name, blob, { contentType: blob.type, cacheControl: "31536000" });
+    if (error) throw error;
+    const { data } = supabase.storage.from(IMAGE_BUCKET).getPublicUrl(name);
+    if (!data?.publicUrl) throw new Error("no public url");
+    return data.publicUrl;
+  } catch {
+    // Storage unavailable — keep the inline copy so the feature still works.
+    return dataUrl;
+  }
+}
