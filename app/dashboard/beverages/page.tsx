@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useAuth } from "@/lib/auth";
 import { api, Rec } from "@/lib/api";
 import { canEditLiquorConfig, canEditSupplies } from "@/lib/roles";
+import { fileToStoredImage, IMAGE_MAX_PX } from "@/lib/image";
 
 type Tab = "board" | "supply" | "config" | "inventory";
 
@@ -49,29 +50,6 @@ function Thumb({ src, fallback = "🍶" }: { src?: string; fallback?: string }) 
   );
 }
 
-/** 이미지 파일을 축소해 data URL(jpeg)로 변환 (jsonb 저장용) */
-async function fileToThumb(file: File, max = 360): Promise<string> {
-  const dataUrl = await new Promise<string>((res, rej) => {
-    const fr = new FileReader();
-    fr.onload = () => res(fr.result as string);
-    fr.onerror = rej;
-    fr.readAsDataURL(file);
-  });
-  const img = await new Promise<HTMLImageElement>((res, rej) => {
-    const im = new Image();
-    im.onload = () => res(im);
-    im.onerror = rej;
-    im.src = dataUrl;
-  });
-  const scale = Math.min(1, max / Math.max(img.width, img.height));
-  const w = Math.max(1, Math.round(img.width * scale));
-  const h = Math.max(1, Math.round(img.height * scale));
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  canvas.getContext("2d")!.drawImage(img, 0, 0, w, h);
-  return canvas.toDataURL("image/jpeg", 0.82);
-}
 
 function priceMapOf(liquors: Rec[]) {
   const m: Record<string, number> = {};
@@ -548,7 +526,7 @@ function LiquorConfig({
               className="hidden"
               onChange={async (e) => {
                 const f = e.target.files?.[0];
-                if (f) setLimg(await fileToThumb(f));
+                if (f) setLimg(await fileToStoredImage(f, IMAGE_MAX_PX.liquor));
               }}
             />
             <span className="text-xs text-slate-500">{limg ? "사진 변경" : "사진 추가"}</span>
@@ -587,7 +565,7 @@ function LiquorConfig({
                   className="hidden"
                   onChange={async (e) => {
                     const f = e.target.files?.[0];
-                    if (f) saveLiquor(l, { image: await fileToThumb(f) });
+                    if (f) saveLiquor(l, { image: await fileToStoredImage(f, IMAGE_MAX_PX.liquor) });
                   }}
                 />
               </label>

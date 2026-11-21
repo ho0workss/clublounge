@@ -13,6 +13,7 @@ import {
   canEditBranding,
   canManageMembers,
 } from "@/lib/roles";
+import { loadImageFile, shrinkToDataUrl, IMAGE_MAX_PX } from "@/lib/image";
 
 const MIN_PX = 300;
 const MAX_PX = 1000;
@@ -169,11 +170,8 @@ function AffiliationTab() {
       setMsg({ ok: false, text: "이미지 파일만 업로드할 수 있습니다." });
       return;
     }
-    const reader = new FileReader();
-    reader.onload = () => {
-      const dataUrl = reader.result as string;
-      const img = new Image();
-      img.onload = () => {
+    loadImageFile(file)
+      .then((img) => {
         if (img.width < MIN_PX || img.height < MIN_PX || img.width > MAX_PX || img.height > MAX_PX) {
           setMsg({
             ok: false,
@@ -181,12 +179,11 @@ function AffiliationTab() {
           });
           return;
         }
-        setLogo(dataUrl);
-      };
-      img.onerror = () => setMsg({ ok: false, text: "이미지를 읽을 수 없습니다." });
-      img.src = dataUrl;
-    };
-    reader.readAsDataURL(file);
+        // Store a downscaled copy: the logo is refetched on every branding
+        // load, so the original file would cost far more than it is worth.
+        setLogo(shrinkToDataUrl(img, IMAGE_MAX_PX.logo));
+      })
+      .catch((e) => setMsg({ ok: false, text: e?.message ?? "이미지를 읽을 수 없습니다." }));
   }, []);
 
   if (!activeAffiliation) {
